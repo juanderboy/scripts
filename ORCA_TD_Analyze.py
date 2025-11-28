@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Genera espectros de absortividad molar ε a partir de TD-DFT de ORCA
-usando la formulación NEA de Crespo-Otero & Barbatti.
+usando la formulación NEA de Crespo-Otero & Barbatti 2012 (doi 10.1007/s00214-012-1237-4).
 
 MODO 1 (archivo ORCA):
     rutina.py TD_10.out [opciones]
