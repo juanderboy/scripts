@@ -1,0 +1,23 @@
+para que esta rutina funcione bien hay que tener instalado vmd y "bc". 
+
+básicamente meter esta rutina en una carpeta que tenga archivos .cube y ploteará todos. Para esto:
+1- ejecutar ./vmd-orb.bash 3
+
+El sistema creará dos archivos de vmd: load_all_plt.vmd y plot_all.vmd además de otras cosas que después vemos.
+
+2- abrir vmd con un xyz de tu molécula. Se precarga el visualization stat de load_all_plt.vmd a mano, o todo a la vez haciendo
+
+vmd hola.xyz -e load_all_plt.vmd
+
+3- el vmd mostrará los orbitales copados. Podés borrar las representaciones del fondo y le sacas el velo y te quedás con lo relevante.
+
+4- Ajustá la cámara como te guste. Si el cutoff no te gusta, yo lo cambio directo desde la rutina original. Está seteado de base a 0.02
+
+5- Una vez que está todo listo y ya tenés decidida la perspectiva para sacar las fotos, ir a la consola de vmd y escribir play plot_all.vmd
+
+esto escribirá en la misma carpeta un montón de archivos tga, uno para cada orbital.
+
+6- la rutina también te armó un archivo "convert.bash" que si lo ejecutas te transformará los tga en png.
+
+Enjoy. ezpz
+

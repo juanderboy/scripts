@@ -1,0 +1,14 @@
+La rutina traer_mulliken.sh entra a carpetas de LIO 1..n y trae los archivos mulliken y mulliken_spin y los guarda como ms_*.dat y mq_*.dat. Luego con todos esos archivos
+en una carpeta única, correr el mulliken_analysis.py hace la magia. Te pide el ts de las dinámicas y los átomos que querés trackear y te hace todo esto:
+- te mergea todos los ms_*.dat y mq_*.dat en archivos con las dinámicas completas.
+- te arma archivos específicos para los átomos que decidiste trackear (cuyos índices salen de busca sus índices en los ms/q*.dat) en donde te analiza la evolución
+temporal de las cargas/spines.
+- te arma histogramas de poblaciones y te hace todo un análisis estadístico de todo lo que hay. Te guarda la info en archivos para levantar, pero también te 
+arma una HERMOSISIMA figura con las distribuciones.
+
+Es espectacular esto,
+gracias chatgpt.
+
+enjoy
+
+Juan

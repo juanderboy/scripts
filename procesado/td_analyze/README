@@ -1,0 +1,10 @@
+obtención de espectros en epislon a partir de TD-DFTs hechos en ORCA 6.
+Ejecutar en una carpeta en donde estén los outputs de orca, llamados TD_*.out, y el programa hace todo el resto sólo.
+El parámetro más relevante es el ancho de la gaussiana de fiteo, delta. Por default está seteado en 0.1 eV, pero 
+hay que ir explorando en cada caso el valor. se cambia con "-wev valor (en eV)".
+
+Para ver todas las opciones, --help.
+
+Enjoy,
+
+J.

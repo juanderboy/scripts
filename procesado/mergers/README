@@ -1,0 +1,10 @@
+Los traer*.sh entran a las carpetas de distintas dinámicas y las traen para copiar. Una boludez. No necesita más explicación.
+El script spin_analysis.py sí que es interesante. Hace lo siguiente:
+1- mergea todos los ms_*.dat que hay en la carpeta analizada en un único archivo. O sea, unifica una dinámica fragmentada.
+2- te pregunta el ts (tipicamente en QM-MM es 0.001 ps, pero chequearlo) y qué átomos querés trackear. El número de átomo(s) sale de mirar el mismo file.
+3- Te arma un archivo con t, s(#at_1), s(#at_2),... espectacular para levantar de una en un excel.
+
+cheers,
+
+J.
+
