@@ -402,7 +402,8 @@ def process_single_file(filename, args):
         print(f"Datos exportados en: {out_dat}")
 
     if args.show:
-        plt.show()
+        plt.show(block=False)
+        plt.pause(0.1)
 
 
 # ----------------------------------------------------------------------
@@ -727,28 +728,41 @@ def process_folder(folder, args):
     print(f"Espectro promedio guardado como: {final_file}")
 
     # === GRAFICAR ESPECTROS INDIVIDUALES ===
-    plt.figure("Individual Spectra", figsize=(10, 5))
+    fig, ax = plt.subplots(
+        num="Individual Spectra",
+        figsize=(10, 5),
+        constrained_layout=True,
+    )
     for i in range(n_files):
         y = eps_matrix[i]
         x = x_common
-        plt.plot(x, y, label=f"A{i+1} ({labels[i]})")
+        ax.plot(x, y, label=f"A{i+1} ({labels[i]})")
 
     if mode == "lambda":
-        plt.title("Individual Spectra (λ)")
-        plt.xlabel("Wavelength (nm)")
+        ax.set_title("Individual Spectra (λ)")
+        ax.set_xlabel("Wavelength (nm)")
     else:
-        plt.title("Individual Spectra (E)")
-        plt.xlabel("Energy (eV)")
+        ax.set_title("Individual Spectra (E)")
+        ax.set_xlabel("Energy (eV)")
 
-    plt.ylabel(r"$\varepsilon$ / (L mol$^{-1}$ cm$^{-1}$)")
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig(os.path.join(folder, "espectros_individuales.png"))
+    ax.set_ylabel(r"$\varepsilon$ / (L mol$^{-1}$ cm$^{-1}$)")
+    if n_files <= 30:
+        ax.legend()
+    else:
+        print(
+            f"Aviso: {n_files} espectros individuales. "
+            "Se omite la leyenda para evitar problemas de layout."
+        )
+    ax.grid(True)
+    fig.savefig(os.path.join(folder, "espectros_individuales.png"))
     print(f"Figura guardada: {os.path.join(folder, 'espectros_individuales.png')}")
 
     # === GRAFICAR SUMAS ACUMULADAS ===
-    plt.figure("Cumulative sums", figsize=(10, 5))
+    fig, ax = plt.subplots(
+        num="Cumulative sums",
+        figsize=(10, 5),
+        constrained_layout=True,
+    )
 
     # degradé de colores para las sumas intermedias
     cmap = plt.cm.inferno
@@ -759,11 +773,11 @@ def process_folder(folder, args):
     if n_files > 1:
         for i in range(n_files - 1):
             y = cum_sums[i]
-            plt.plot(x, y, color=colors[i], lw=0.7, alpha=0.9)
+            ax.plot(x, y, color=colors[i], lw=0.7, alpha=0.9)
 
     # curva final: negra y gruesa
     y_last = cum_sums[-1]
-    plt.plot(x, y_last, color="black", lw=2.0, label="total sum")
+    ax.plot(x, y_last, color="black", lw=2.0, label="total sum")
 
     # marcar picos en la última suma (sobre la curva negra)
     if not args.no_final_peaks:
@@ -771,12 +785,12 @@ def process_folder(folder, args):
         for idx in peak_indices:
             x_maxp = x[idx]
             A_max = y_last[idx]
-            plt.plot(x_maxp, A_max, "o", color="black")
+            ax.plot(x_maxp, A_max, "o", color="black")
             if mode == "lambda":
                 txt = f"{x_maxp:.1f}"
             else:
                 txt = f"{x_maxp:.2f}"
-            plt.text(
+            ax.text(
                 x_maxp,
                 A_max * 1.01,
                 txt,
@@ -786,21 +800,21 @@ def process_folder(folder, args):
             )
 
     if mode == "lambda":
-        plt.title("Cumulative sums of spectra (maxima, λ)")
-        plt.xlabel("Wavelength (nm)")
+        ax.set_title("Cumulative sums of spectra (maxima, λ)")
+        ax.set_xlabel("Wavelength (nm)")
     else:
-        plt.title("Cumulative sums of spectra (maxima, E)")
-        plt.xlabel("Energy (eV)")
+        ax.set_title("Cumulative sums of spectra (maxima, E)")
+        ax.set_xlabel("Energy (eV)")
 
-    plt.ylabel(r"cumulative $\varepsilon$ / (L mol$^{-1}$ cm$^{-1}$)")
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig(os.path.join(folder, "espectros_sumados.png"))
+    ax.set_ylabel(r"cumulative $\varepsilon$ / (L mol$^{-1}$ cm$^{-1}$)")
+    ax.legend()
+    ax.grid(True)
+    fig.savefig(os.path.join(folder, "espectros_sumados.png"))
     print(f"Figura guardada: {os.path.join(folder, 'espectros_sumados.png')}")
 
     if args.show:
-        plt.show()
+        plt.show(block=False)
+        plt.pause(0.1)
 
 
 # ----------------------------------------------------------------------
