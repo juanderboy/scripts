@@ -17,7 +17,7 @@ MODO 2 (carpeta):
         -> te pregunta qué índices usar (1-15, 1,2,4-7, etc.)
         -> aplica --exclude si se indica
         -> genera espectro_*.dat (mode=lambda) o espectroE_*.dat (mode=energy)
-        -> genera PNG individual TD_*.out-nea-eps.png para cada uno
+        -> opcional: genera PNG individual TD_*.out-nea-eps.png para cada uno
         -> combina todos los espectros en espectros_suma.dat / espectrosE_suma.dat
         -> genera espectro_final.dat con el espectro promedio
         -> genera:
@@ -420,7 +420,7 @@ def process_folder(folder, args):
           * si falla o queda fuera de rango, avisa y sigue
           * si funciona:
               - guarda espectro_*.dat (lambda) o espectroE_*.dat (energy)
-              - guarda PNG TD_*.out-nea-eps.png con sticks
+              - opcional: guarda PNG TD_*.out-nea-eps.png con sticks
       - Genera espectros_suma.dat (lambda) o espectrosE_suma.dat (energy)
       - Genera espectro_final.dat con el espectro promedio
       - Grafica:
@@ -578,74 +578,74 @@ def process_folder(folder, args):
 
             all_spectra.append((x_use, eps_use, label))
 
-            # --- guardar PNG individual para este TD (espectro + sticks) ---
-            fig, ax = plt.subplots()
-            ax.plot(x_use, eps_use, lw=1.5)
+            # Nota: PNGs individuales solo si se solicita con --printall.
+            if args.printall and not args.nosave:
+                fig, ax = plt.subplots()
+                ax.plot(x_use, eps_use, lw=1.5)
 
-            w_hwhm = args.linewidth_ev / 2.0
-            C0 = math.pi * e_charge * hbar / (2.0 * m_e * c_light * eps0 * args.nref)
-            C_eps = C0 * (10.0 * N_A / LN10)
-            stick_heights_E = [
-                C_eps * fn / (w_hwhm * math.sqrt(math.pi / math.log(2.0)))
-                for fn in foscs
-            ]
+                w_hwhm = args.linewidth_ev / 2.0
+                C0 = math.pi * e_charge * hbar / (2.0 * m_e * c_light * eps0 * args.nref)
+                C_eps = C0 * (10.0 * N_A / LN10)
+                stick_heights_E = [
+                    C_eps * fn / (w_hwhm * math.sqrt(math.pi / math.log(2.0)))
+                    for fn in foscs
+                ]
 
-            if mode == "lambda":
-                lambda_lines = HC_EV_NM / energies_eV
-                stick_heights = np.array(stick_heights_E)  # SIN jacobiano
-                x_sticks = lambda_lines
-                x_label = r"$\lambda$ / nm"
-                title = f"Absorption spectrum (NEA, λ) - {base}"
-            else:
-                x_sticks = energies_eV
-                stick_heights = np.array(stick_heights_E)
-                x_label = "E / eV"
-                title = f"Absorption spectrum (NEA, E) - {base}"
-
-            ax.stem(
-                x_sticks,
-                stick_heights,
-                linefmt="grey",
-                markerfmt=" ",
-                basefmt=" ",
-                use_line_collection=True,
-            )
-
-            # marcar picos en este espectro
-            peaks, _ = find_peaks(eps_use)
-            for p in peaks:
-                xp = x_use[p]
-                yp = eps_use[p]
                 if mode == "lambda":
-                    label_txt = f"{xp:.0f}"
+                    lambda_lines = HC_EV_NM / energies_eV
+                    stick_heights = np.array(stick_heights_E)  # SIN jacobiano
+                    x_sticks = lambda_lines
+                    x_label = r"$\lambda$ / nm"
+                    title = f"Absorption spectrum (NEA, λ) - {base}"
                 else:
-                    label_txt = f"{xp:.2f}"
-                ax.annotate(
-                    label_txt,
-                    xy=(xp, yp),
-                    xytext=(0, 5),
-                    textcoords="offset points",
-                    ha="center",
-                    rotation=90 if mode == "lambda" else 0,
-                    fontsize=8,
+                    x_sticks = energies_eV
+                    stick_heights = np.array(stick_heights_E)
+                    x_label = "E / eV"
+                    title = f"Absorption spectrum (NEA, E) - {base}"
+
+                ax.stem(
+                    x_sticks,
+                    stick_heights,
+                    linefmt="grey",
+                    markerfmt=" ",
+                    basefmt=" ",
+                    use_line_collection=True,
                 )
 
-            ax.set_xlabel(x_label)
-            ax.set_ylabel(r"$\varepsilon$ / (L mol$^{-1}$ cm$^{-1}$)")
-            ax.set_xlim(x_min, x_max)
-            y_min_local = 0.0
-            y_max_local = eps_use.max() * 1.1 if eps_use.size > 0 else 1.0
-            ax.set_ylim(y_min_local, y_max_local)
-            ax.set_title(title)
-            ax.grid(False)
-            fig.tight_layout()
+                # marcar picos en este espectro
+                peaks, _ = find_peaks(eps_use)
+                for p in peaks:
+                    xp = x_use[p]
+                    yp = eps_use[p]
+                    if mode == "lambda":
+                        label_txt = f"{xp:.0f}"
+                    else:
+                        label_txt = f"{xp:.2f}"
+                    ax.annotate(
+                        label_txt,
+                        xy=(xp, yp),
+                        xytext=(0, 5),
+                        textcoords="offset points",
+                        ha="center",
+                        rotation=90 if mode == "lambda" else 0,
+                        fontsize=8,
+                    )
 
-            if not args.nosave:
+                ax.set_xlabel(x_label)
+                ax.set_ylabel(r"$\varepsilon$ / (L mol$^{-1}$ cm$^{-1}$)")
+                ax.set_xlim(x_min, x_max)
+                y_min_local = 0.0
+                y_max_local = eps_use.max() * 1.1 if eps_use.size > 0 else 1.0
+                ax.set_ylim(y_min_local, y_max_local)
+                ax.set_title(title)
+                ax.grid(False)
+                fig.tight_layout()
+
                 out_png = td_file + "-nea-eps.png"
                 fig.savefig(out_png, dpi=300)
                 print(f"Espectro guardado en: {out_png}")
 
-            plt.close(fig)
+                plt.close(fig)
 
         except Exception:
             print(
@@ -831,9 +831,10 @@ def main():
             "      Default: 0.1 eV (a menos que se indique explícitamente).\n"
             "  -s, --show            Muestra la ventana de matplotlib.\n"
             "                        Si no se especifica -s/--show, se asume True.\n"
-            "  -n, --nosave          No guarda los PNG de espectros individuales.\n"
+            "  -n, --nosave          No guarda los PNG que se pudieran generar.\n"
             "  --nref FLOAT          Índice de refracción (default: 1.33, agua en el visible).\n"
             "  --exclude LIST        En modo carpeta, excluye TD_N.out por número. Ej: --exclude 10,12,15\n"
+            "  --printall            En modo carpeta, guarda PNG individuales TD_*.out-nea-eps.png.\n"
             "  -e, --export          En modo archivo único, exporta ε como espectro_*.dat o espectroE_*.dat.\n"
         ),
         formatter_class=argparse.RawTextHelpFormatter,
@@ -870,7 +871,7 @@ def main():
         "--nosave",
         default=False,
         action="store_true",
-        help="No guardar los PNG de espectros individuales.",
+        help="No guardar los PNG que se pudieran generar.",
     )
 
     # ancho de línea (FWHM) en eV
@@ -918,6 +919,13 @@ def main():
         action="store_true",
         help="Do not mark/label peaks in the final cumulative spectrum (folder mode).",
     )
+    # imprimir PNGs individuales en modo carpeta
+    parser.add_argument(
+        "--printall",
+        default=False,
+        action="store_true",
+        help="(Modo carpeta) Guardar PNG individuales TD_*.out-nea-eps.png.",
+    )
 
     # exportar datos en modo archivo único
     parser.add_argument(
@@ -955,4 +963,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
