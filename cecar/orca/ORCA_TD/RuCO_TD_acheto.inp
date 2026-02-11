@@ -1,0 +1,15 @@
+!B3LYP old-ZORA-TZVP CPCM(Acetonitrile)
+
+#TD en acheto, con SOC prendido y base full electron. con correccion relativista ZORA. 30 estados iniciales, terminan siendo como 120 por el SOC xD
+
+%MaxCore 8000
+
+!Pal8
+
+%TDDFT
+ nroots = 30
+ doSOC true
+end
+
+* xyzfile 2 1 RuCO_opt.xyz
+

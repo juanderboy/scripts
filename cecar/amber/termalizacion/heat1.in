@@ -1,0 +1,20 @@
+Heating NPT
+ &cntrl
+    imin=0,
+    ntx=5,irest=1,
+    nstlim=300000,dt=0.001,
+    ntwr=1000,ntpr=1000,ntwx=1000,
+    ntwv=0,ntwe=0,iwrap=0,ioutfm=1,ntxo=1,
+    ntt=3,tempi=100.0,temp0=300.0, gamma_ln=5.0,ig=-1,
+    ntp=1,pres0=1.0,taup=2.0,
+    ntc=2,ntf=2,ntb=2,
+    cut=10.0,
+    nmropt=1,
+ /
+ &wt
+    type='TEMP0',
+    istep1=0,
+    istep2=100000,
+    value1=122.0,
+    value2=200.0,/
+ &wt type='END' /

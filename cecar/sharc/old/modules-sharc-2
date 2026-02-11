@@ -1,0 +1,1 @@
+module load ORCA/4.2.1-gompi-2019b ncurses/6.1-GCCcore-8.3.0 HDF5/1.10.5-gompi-2019b netCDF/4.7.1-gompi-2019b OpenBLAS/0.3.7-GCC-8.3.0 libjpeg-turbo/2.0.3-GCCcore-8.3.0 LAPACK/3.8.0-GCC-8.3.0 FFTW/3.3.8-gompi-2019b Python/3.7.4-GCCcore-8.3.0 matplotlib/3.1.1-foss-2019b-Python-3.7.4 Python/2.7.16-GCCcore-8.3.0

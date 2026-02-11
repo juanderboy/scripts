@@ -1,0 +1,12 @@
+para correr QM-MM con ORCA 6, hay que levantar:
+- ORCA obviamente
+- un amber sólo para usar cpptraj
+
+básicamente hay que armar el FF en modo orca:
+- se necesita primero hacer un pdb con cpptraj a partir del rst7 y el prmtop
+- se necesita transcribir el FF en lenguaje orca.
+
+todo eso está puesto en el script.
+
+NOTA: Los índices que usa ORCA son los mismos que VMD pero son un número menos que LIO. OJO.
+

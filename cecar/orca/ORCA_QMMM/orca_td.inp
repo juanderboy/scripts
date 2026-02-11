@@ -1,0 +1,27 @@
+!B3LYP def2-tzvp  
+!Pal16
+%Maxcore 2000
+
+%TDDFT
+doNTO true
+NTOThresh 1e-4
+NRoots = 150
+end
+
+!QMMM
+%mm
+ORCAFFFilename "1wla_HID_OH_solv.ORCAFF.prms" #ORCAFF file
+SwitchForceLJ true # Use the switch force scheme for the LJ interaction.
+LJCutOffInner 10.0 # Distance (in Ang)
+LJCutOffOuter 12.0 # Distance (in Ang)
+ShiftForceCoulomb true # Use the shift force scheme for the Coulomb interaction
+CoulombCutOff 10.0 # Distance (in Ang)
+end
+
+%qmmm
+  QMAtoms {1014:1021 1457:1464 2412:2486} end
+  ActiveAtoms {1014:1021 1457:1464 2412:2486} end
+  PrintLevel 4
+end
+*pdbfile -2 2 orca.pdb 
+
