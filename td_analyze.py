@@ -34,6 +34,7 @@ from scipy.signal import find_peaks
 import math
 import os
 import glob
+import csv
 
 # ----------------------------------------------------------------------
 # Constantes físicas (SI)
@@ -402,8 +403,7 @@ def process_single_file(filename, args):
         print(f"Datos exportados en: {out_dat}")
 
     if args.show:
-        plt.show(block=False)
-        plt.pause(0.1)
+        plt.show()
 
 
 # ----------------------------------------------------------------------
@@ -503,7 +503,7 @@ def process_folder(folder, args):
     # armar espectros_suma.dat y las figuras globales.
     # ------------------------------------------------------------------
 
-    all_spectra = []   # lista de (x_i, eps_i, etiqueta); x_i = λ_nm o E_eV
+    all_spectra = []   # lista de (x_i, eps_i, etiqueta, td_file); x_i = λ_nm o E_eV
     x_global_min = float("inf")
     x_global_max = -float("inf")
 
@@ -577,7 +577,7 @@ def process_folder(folder, args):
             x_global_min = min(x_global_min, x_use.min())
             x_global_max = max(x_global_max, x_use.max())
 
-            all_spectra.append((x_use, eps_use, label))
+            all_spectra.append((x_use, eps_use, label, base))
 
             # Nota: PNGs individuales solo si se solicita con --printall.
             if args.printall and not args.nosave:
@@ -668,11 +668,13 @@ def process_folder(folder, args):
 
     eps_matrix = []
     labels = []
+    td_names = []
 
-    for x_i, eps_i, label in all_spectra:
+    for x_i, eps_i, label, td_name in all_spectra:
         eps_interp = np.interp(x_common, x_i, eps_i, left=0.0, right=0.0)
         eps_matrix.append(eps_interp)
         labels.append(label)
+        td_names.append(td_name)
 
         if mode == "lambda":
             out_dat = os.path.join(folder, f"espectro_{label}.dat")
@@ -687,6 +689,97 @@ def process_folder(folder, args):
 
     eps_matrix = np.array(eps_matrix)
     n_files = eps_matrix.shape[0]
+
+    # lista de máximos por espectro (modo carpeta)
+    if args.maxlist:
+        if args.maxrange is not None:
+            x_min_range, x_max_range = args.maxrange
+        else:
+            x_min_in = input(
+                f"Ingrese XMIN para buscar máximos ({'nm' if mode == 'lambda' else 'eV'}) "
+                "[Enter = sin límite inferior]: "
+            ).strip()
+            x_max_in = input(
+                f"Ingrese XMAX para buscar máximos ({'nm' if mode == 'lambda' else 'eV'}) "
+                "[Enter = sin límite superior]: "
+            ).strip()
+            x_min_range = float(x_min_in) if x_min_in else float(x_common.min())
+            x_max_range = float(x_max_in) if x_max_in else float(x_common.max())
+        if x_min_range >= x_max_range:
+            print("ERROR: --maxrange requiere XMIN < XMAX.")
+            sys.exit(1)
+
+        if args.maxeps is not None:
+            eps_threshold = args.maxeps
+        else:
+            eps_in = input(
+                "Ingrese umbral mínimo de epsilon [Enter = sin umbral]: "
+            ).strip()
+            eps_threshold = float(eps_in) if eps_in else 0.0
+        if eps_threshold < 0:
+            print("ERROR: el umbral de epsilon debe ser >= 0.")
+            sys.exit(1)
+
+        if args.maxonly and args.allpeaks:
+            print("ERROR: --maxonly y --allpeaks son excluyentes.")
+            sys.exit(1)
+        if args.maxonly is None and args.allpeaks is None:
+            choice = input(
+                "¿Listar solo el máximo absoluto por espectro? [s/N]: "
+            ).strip().lower()
+            max_only = choice in ("s", "si", "sí", "y", "yes")
+        else:
+            max_only = bool(args.maxonly)
+
+        mask = (x_common >= x_min_range) & (x_common <= x_max_range)
+        if not np.any(mask):
+            print(
+                "Aviso: el rango indicado para --maxrange no intersecta "
+                "el eje x. Se generará un CSV vacío."
+            )
+
+        if mode == "lambda":
+            x_col = "lambda_max_nm"
+        else:
+            x_col = "energy_max_eV"
+
+        peak_rows = []
+        max_peaks = 0
+        for i in range(n_files):
+            y = eps_matrix[i]
+            if not np.any(mask):
+                peak_rows.append([])
+                continue
+            y_use = y[mask]
+            x_use = x_common[mask]
+            peaks, _ = find_peaks(y_use)
+            if peaks.size == 0:
+                peak_rows.append([])
+                continue
+            peaks_in = [float(x_use[p]) for p in peaks if y_use[p] >= eps_threshold]
+            if max_only and peaks_in:
+                p_idx = int(np.argmax([y_use[p] for p in peaks if y_use[p] >= eps_threshold]))
+                peaks_in = [peaks_in[p_idx]]
+            peak_rows.append(peaks_in)
+            if len(peaks_in) > max_peaks:
+                max_peaks = len(peaks_in)
+
+        if max_peaks == 0:
+            max_peaks = 1
+
+        out_csv = os.path.join(folder, "maximos_individuales.csv")
+        with open(out_csv, "w", newline="") as f:
+            writer = csv.writer(f)
+            header = ["label", "td_file"] + [f"peak{i+1}" for i in range(max_peaks)]
+            writer.writerow(header)
+            for i in range(n_files):
+                row_peaks = peak_rows[i] if peak_rows[i] else ["NA"]
+                row = [labels[i], td_names[i]] + row_peaks
+                if len(row) < len(header):
+                    row.extend([""] * (len(header) - len(row)))
+                writer.writerow(row)
+
+        print(f"Máximos individuales guardados en: {out_csv}")
 
     # sumas acumuladas
     cum_sums = np.cumsum(eps_matrix, axis=0)
@@ -746,13 +839,6 @@ def process_folder(folder, args):
         ax.set_xlabel("Energy (eV)")
 
     ax.set_ylabel(r"$\varepsilon$ / (L mol$^{-1}$ cm$^{-1}$)")
-    if n_files <= 30:
-        ax.legend()
-    else:
-        print(
-            f"Aviso: {n_files} espectros individuales. "
-            "Se omite la leyenda para evitar problemas de layout."
-        )
     ax.grid(True)
     fig.savefig(os.path.join(folder, "espectros_individuales.png"))
     print(f"Figura guardada: {os.path.join(folder, 'espectros_individuales.png')}")
@@ -813,8 +899,7 @@ def process_folder(folder, args):
     print(f"Figura guardada: {os.path.join(folder, 'espectros_sumados.png')}")
 
     if args.show:
-        plt.show(block=False)
-        plt.pause(0.1)
+        plt.show()
 
 
 # ----------------------------------------------------------------------
@@ -848,6 +933,11 @@ def main():
             "  -n, --nosave          No guarda los PNG que se pudieran generar.\n"
             "  --nref FLOAT          Índice de refracción (default: 1.33, agua en el visible).\n"
             "  --exclude LIST        En modo carpeta, excluye TD_N.out por número. Ej: --exclude 10,12,15\n"
+            "  --maxlist             En modo carpeta, genera CSV con máximos individuales.\n"
+            "  --maxrange XMIN XMAX  Rango de x para buscar máximos (nm en modo lambda, eV en modo energy).\n"
+            "  --maxeps FLOAT        Umbral mínimo de epsilon para listar máximos.\n"
+            "  --maxonly             Listar solo el máximo absoluto por espectro (modo carpeta).\n"
+            "  --allpeaks            Listar todos los máximos locales (modo carpeta).\n"
             "  --printall            En modo carpeta, guarda PNG individuales TD_*.out-nea-eps.png.\n"
             "  -e, --export          En modo archivo único, exporta ε como espectro_*.dat o espectroE_*.dat.\n"
         ),
@@ -939,6 +1029,38 @@ def main():
         default=False,
         action="store_true",
         help="(Modo carpeta) Guardar PNG individuales TD_*.out-nea-eps.png.",
+    )
+
+    # lista de máximos por espectro (modo carpeta)
+    parser.add_argument(
+        "--maxlist",
+        default=False,
+        action="store_true",
+        help="(Modo carpeta) Generar CSV con la localización del máximo de cada espectro.",
+    )
+    parser.add_argument(
+        "--maxrange",
+        nargs=2,
+        type=float,
+        metavar=("XMIN", "XMAX"),
+        help="(Modo carpeta) Rango de x para buscar máximos (nm en modo lambda, eV en modo energy).",
+    )
+    parser.add_argument(
+        "--maxeps",
+        type=float,
+        help="(Modo carpeta) Umbral mínimo de epsilon para listar máximos.",
+    )
+    parser.add_argument(
+        "--maxonly",
+        default=None,
+        action="store_true",
+        help="(Modo carpeta) Listar solo el máximo absoluto dentro del rango.",
+    )
+    parser.add_argument(
+        "--allpeaks",
+        default=None,
+        action="store_true",
+        help="(Modo carpeta) Listar todos los máximos locales dentro del rango.",
     )
 
     # exportar datos en modo archivo único
