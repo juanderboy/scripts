@@ -843,6 +843,51 @@ def process_folder(folder, args):
     fig.savefig(os.path.join(folder, "espectros_individuales.png"))
     print(f"Figura guardada: {os.path.join(folder, 'espectros_individuales.png')}")
 
+    if args.html:
+        try:
+            import plotly.graph_objects as go
+        except Exception:
+            print("Aviso: no pude importar plotly. Instalá con: pip install plotly")
+        else:
+            fig_html = go.Figure()
+            for i in range(n_files):
+                fig_html.add_trace(
+                    go.Scatter(
+                        x=x_common,
+                        y=eps_matrix[i],
+                        mode="lines",
+                        name=f"A{i+1} ({labels[i]})",
+                        hovertemplate=f"{td_names[i]}<br>x=%{{x:.3f}}<br>y=%{{y:.3e}}<extra></extra>",
+                    )
+                )
+
+            if mode == "lambda":
+                x_title = "Wavelength (nm)"
+                title = "Individual Spectra (λ)"
+            else:
+                x_title = "Energy (eV)"
+                title = "Individual Spectra (E)"
+
+            fig_html.update_layout(
+                title=title,
+                xaxis_title=x_title,
+                yaxis_title="epsilon / (L mol^-1 cm^-1)",
+                hovermode="closest",
+                showlegend=False,
+                autosize=True,
+                margin=dict(l=60, r=20, t=60, b=50),
+            )
+
+            html_path = os.path.join(folder, "espectros_individuales.html")
+            fig_html.write_html(
+                html_path,
+                include_plotlyjs="cdn",
+                config={"responsive": True},
+                default_width="100%",
+                default_height="100%",
+            )
+            print(f"HTML interactivo guardado en: {html_path}")
+
     # === GRAFICAR SUMAS ACUMULADAS ===
     fig, ax = plt.subplots(
         num="Cumulative sums",
@@ -1061,6 +1106,14 @@ def main():
         default=None,
         action="store_true",
         help="(Modo carpeta) Listar todos los máximos locales dentro del rango.",
+    )
+
+    # HTML interactivo (plotly) en modo carpeta
+    parser.add_argument(
+        "--html",
+        default=False,
+        action="store_true",
+        help="(Modo carpeta) Generar HTML interactivo con espectros individuales.",
     )
 
     # exportar datos en modo archivo único
