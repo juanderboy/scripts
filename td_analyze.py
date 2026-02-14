@@ -20,9 +20,10 @@ MODO 2 (carpeta):
         -> opcional: genera PNG individual TD_*.out-nea-eps.png para cada uno
         -> combina todos los espectros en espectros_suma.dat / espectrosE_suma.dat
         -> genera espectro_final.dat con el espectro promedio
-        -> genera:
-             - espectros_individuales.png
-             - espectros_sumados.png
+        -> genera HTML interactivo con dos vistas:
+             - espectros individuales
+             - espectros acumulados
+        -> abre el HTML automáticamente en el navegador
 """
 
 import sys
@@ -35,6 +36,10 @@ import math
 import os
 import glob
 import csv
+import json
+import shutil
+import subprocess
+import webbrowser
 
 # ----------------------------------------------------------------------
 # Constantes físicas (SI)
@@ -240,6 +245,59 @@ def parse_selection_string(sel, n_files):
     return sorted(indices)
 
 
+def open_html_in_browser(html_path):
+    """
+    Intenta abrir el HTML en el navegador por defecto.
+    En WSL prioriza `wslview` para abrir en Windows.
+    Si no puede abrir el HTML, intenta abrir la carpeta con `explorer.exe .`.
+    """
+    abs_path = os.path.abspath(html_path)
+    folder_path = os.path.dirname(abs_path)
+    if shutil.which("wslview"):
+        try:
+            p = subprocess.run(
+                ["wslview", abs_path],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if p.returncode == 0:
+                return "html"
+        except Exception:
+            pass
+
+    if shutil.which("xdg-open"):
+        try:
+            p = subprocess.run(
+                ["xdg-open", abs_path],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if p.returncode == 0:
+                return "html"
+        except Exception:
+            pass
+
+    try:
+        if bool(webbrowser.open(f"file://{abs_path}")):
+            return "html"
+    except Exception:
+        pass
+
+    try:
+        subprocess.run(
+            ["explorer.exe", "."],
+            cwd=folder_path,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return "folder"
+    except Exception:
+        return "none"
+
+
 # ----------------------------------------------------------------------
 # Lógica para modo "archivo único"
 # ----------------------------------------------------------------------
@@ -424,9 +482,10 @@ def process_folder(folder, args):
               - opcional: guarda PNG TD_*.out-nea-eps.png con sticks
       - Genera espectros_suma.dat (lambda) o espectrosE_suma.dat (energy)
       - Genera espectro_final.dat con el espectro promedio
-      - Grafica:
-          * espectros_individuales.png
-          * espectros_sumados.png
+      - Genera HTML interactivo con:
+          * espectros individuales
+          * espectros acumulados
+      - Intenta abrir el HTML en el navegador automáticamente
     """
 
     if not os.path.isdir(folder):
@@ -820,56 +879,41 @@ def process_folder(folder, args):
     np.savetxt(final_file, final_data, header=final_header)
     print(f"Espectro promedio guardado como: {final_file}")
 
-    # === GRAFICAR ESPECTROS INDIVIDUALES ===
-    fig, ax = plt.subplots(
-        num="Individual Spectra",
-        figsize=(10, 5),
-        constrained_layout=True,
-    )
-    for i in range(n_files):
-        y = eps_matrix[i]
-        x = x_common
-        ax.plot(x, y, label=f"A{i+1} ({labels[i]})")
-
-    if mode == "lambda":
-        ax.set_title("Individual Spectra (λ)")
-        ax.set_xlabel("Wavelength (nm)")
-    else:
-        ax.set_title("Individual Spectra (E)")
-        ax.set_xlabel("Energy (eV)")
-
-    ax.set_ylabel(r"$\varepsilon$ / (L mol$^{-1}$ cm$^{-1}$)")
-    ax.grid(True)
-    fig.savefig(os.path.join(folder, "espectros_individuales.png"))
-    print(f"Figura guardada: {os.path.join(folder, 'espectros_individuales.png')}")
-
     if args.html:
         try:
             import plotly.graph_objects as go
         except Exception:
             print("Aviso: no pude importar plotly. Instalá con: pip install plotly")
         else:
-            fig_html = go.Figure()
+            if mode == "lambda":
+                x_title = "Wavelength (nm)"
+                indiv_title = "Individual Spectra (λ)"
+                cum_title = "Cumulative sums of spectra (λ)"
+            else:
+                x_title = "Energy (eV)"
+                indiv_title = "Individual Spectra (E)"
+                cum_title = "Cumulative sums of spectra (E)"
+
+            fig_ind = go.Figure()
+            trace_colors = []
             for i in range(n_files):
-                fig_html.add_trace(
+                c = plt.cm.tab20(i % 20)
+                color = f"rgb({int(c[0]*255)}, {int(c[1]*255)}, {int(c[2]*255)})"
+                trace_colors.append(color)
+                fig_ind.add_trace(
                     go.Scatter(
                         x=x_common,
                         y=eps_matrix[i],
                         mode="lines",
                         name=f"A{i+1} ({labels[i]})",
-                        hovertemplate=f"{td_names[i]}<br>x=%{{x:.3f}}<br>y=%{{y:.3e}}<extra></extra>",
+                        line=dict(color=color, width=1.5),
+                        hovertemplate=(
+                            f"{td_names[i]}<br>x=%{{x:.3f}}<br>y=%{{y:.3e}}<extra></extra>"
+                        ),
                     )
                 )
-
-            if mode == "lambda":
-                x_title = "Wavelength (nm)"
-                title = "Individual Spectra (λ)"
-            else:
-                x_title = "Energy (eV)"
-                title = "Individual Spectra (E)"
-
-            fig_html.update_layout(
-                title=title,
+            fig_ind.update_layout(
+                title=indiv_title,
                 xaxis_title=x_title,
                 yaxis_title="epsilon / (L mol^-1 cm^-1)",
                 hovermode="closest",
@@ -878,73 +922,488 @@ def process_folder(folder, args):
                 margin=dict(l=60, r=20, t=60, b=50),
             )
 
-            html_path = os.path.join(folder, "espectros_individuales.html")
-            fig_html.write_html(
-                html_path,
+            fig_cum = go.Figure()
+            cmap = plt.cm.inferno
+            cum_colors = cmap(np.linspace(0.1, 0.9, n_files))
+            if n_files > 1:
+                for i in range(n_files - 1):
+                    c = cum_colors[i]
+                    color = f"rgb({int(c[0]*255)}, {int(c[1]*255)}, {int(c[2]*255)})"
+                    fig_cum.add_trace(
+                        go.Scatter(
+                            x=x_common,
+                            y=cum_sums[i],
+                            mode="lines",
+                            name=f"sum_A1_to_A{i+1}",
+                            line=dict(color=color, width=1.0),
+                            opacity=0.9,
+                            hovertemplate=(
+                                f"sum_A1_to_A{i+1}<br>x=%{{x:.3f}}<br>y=%{{y:.3e}}<extra></extra>"
+                            ),
+                        )
+                    )
+
+            y_last = cum_sums[-1]
+            fig_cum.add_trace(
+                go.Scatter(
+                    x=x_common,
+                    y=y_last,
+                    mode="lines",
+                    name="total sum",
+                    line=dict(color="black", width=2.0),
+                    hovertemplate="total sum<br>x=%{x:.3f}<br>y=%{y:.3e}<extra></extra>",
+                )
+            )
+
+            if not args.no_final_peaks:
+                peak_indices, _ = find_peaks(y_last)
+                if peak_indices.size > 0:
+                    x_peak = x_common[peak_indices]
+                    y_peak = y_last[peak_indices]
+                    if mode == "lambda":
+                        peak_text = [f"{v:.1f}" for v in x_peak]
+                    else:
+                        peak_text = [f"{v:.2f}" for v in x_peak]
+                    fig_cum.add_trace(
+                        go.Scatter(
+                            x=x_peak,
+                            y=y_peak,
+                            mode="markers+text",
+                            text=peak_text,
+                            textposition="top center",
+                            name="peaks",
+                            marker=dict(color="black", size=6),
+                            hovertemplate="peak<br>x=%{x:.3f}<br>y=%{y:.3e}<extra></extra>",
+                        )
+                    )
+
+            cum_sum_trace_count = len(fig_cum.data)
+            fig_cum.add_trace(
+                go.Scatter(
+                    x=x_common,
+                    y=final_avg,
+                    mode="lines",
+                    name="average spectrum",
+                    line=dict(color="rgb(35,95,190)", width=2.4),
+                    hovertemplate="average<br>x=%{x:.3f}<br>y=%{y:.3e}<extra></extra>",
+                    visible=False,
+                )
+            )
+            cum_avg_trace_idx = len(fig_cum.data) - 1
+
+            fig_cum.update_layout(
+                title=cum_title,
+                xaxis_title=x_title,
+                yaxis_title="cumulative epsilon / (L mol^-1 cm^-1)",
+                hovermode="closest",
+                showlegend=False,
+                autosize=True,
+                margin=dict(l=60, r=20, t=60, b=50),
+            )
+
+            html_path = os.path.join(folder, "a_espectros_interactivos.html")
+            fig_div_ind = fig_ind.to_html(
+                full_html=False,
                 include_plotlyjs="cdn",
                 config={"responsive": True},
                 default_width="100%",
                 default_height="100%",
             )
-            print(f"HTML interactivo guardado en: {html_path}")
-
-    # === GRAFICAR SUMAS ACUMULADAS ===
-    fig, ax = plt.subplots(
-        num="Cumulative sums",
-        figsize=(10, 5),
-        constrained_layout=True,
-    )
-
-    # degradé de colores para las sumas intermedias
-    cmap = plt.cm.inferno
-    colors = cmap(np.linspace(0.1, 0.9, n_files))
-    x = x_common
-
-    # curvas intermedias: finitas, en degradé
-    if n_files > 1:
-        for i in range(n_files - 1):
-            y = cum_sums[i]
-            ax.plot(x, y, color=colors[i], lw=0.7, alpha=0.9)
-
-    # curva final: negra y gruesa
-    y_last = cum_sums[-1]
-    ax.plot(x, y_last, color="black", lw=2.0, label="total sum")
-
-    # marcar picos en la última suma (sobre la curva negra)
-    if not args.no_final_peaks:
-        peak_indices, _ = find_peaks(y_last)
-        for idx in peak_indices:
-            x_maxp = x[idx]
-            A_max = y_last[idx]
-            ax.plot(x_maxp, A_max, "o", color="black")
-            if mode == "lambda":
-                txt = f"{x_maxp:.1f}"
-            else:
-                txt = f"{x_maxp:.2f}"
-            ax.text(
-                x_maxp,
-                A_max * 1.01,
-                txt,
-                ha="center",
-                va="bottom",
-                fontsize=8,
+            fig_div_cum = fig_cum.to_html(
+                full_html=False,
+                include_plotlyjs=False,
+                config={"responsive": True},
+                default_width="100%",
+                default_height="100%",
             )
 
-    if mode == "lambda":
-        ax.set_title("Cumulative sums of spectra (maxima, λ)")
-        ax.set_xlabel("Wavelength (nm)")
-    else:
-        ax.set_title("Cumulative sums of spectra (maxima, E)")
-        ax.set_xlabel("Energy (eV)")
+            html_doc = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spectra Viewer</title>
+  <style>
+    html, body {{
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      font-family: Arial, sans-serif;
+      background: #ffffff;
+    }}
+    .wrap {{
+      width: 100%;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }}
+    .tabs {{
+      display: flex;
+      gap: 8px;
+      padding: 8px 12px;
+      border-bottom: 1px solid #ddd;
+      background: #f5f5f5;
+      flex: 0 0 auto;
+    }}
+    .tab-btn {{
+      padding: 6px 10px;
+      border: 1px solid #888;
+      border-radius: 6px;
+      background: #fff;
+      cursor: pointer;
+    }}
+    .tab-btn.active {{
+      background: #222;
+      color: #fff;
+      border-color: #222;
+    }}
+    .toggle-btn.active {{
+      background: #222;
+      color: #fff;
+      border-color: #222;
+    }}
+    .controls {{
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      border-bottom: 1px solid #ddd;
+      background: #f7f7f7;
+      flex-wrap: wrap;
+      flex: 0 0 auto;
+    }}
+    .controls input {{
+      min-width: 260px;
+      padding: 6px 8px;
+      border: 1px solid #bbb;
+      border-radius: 6px;
+      font-size: 14px;
+    }}
+    .controls select {{
+      min-width: 240px;
+      padding: 6px 8px;
+      border: 1px solid #bbb;
+      border-radius: 6px;
+      font-size: 14px;
+      background: #fff;
+    }}
+    .controls select[multiple] {{
+      min-height: 0;
+      height: 34px;
+    }}
+    .controls button {{
+      padding: 6px 10px;
+      border: 1px solid #888;
+      border-radius: 6px;
+      background: #fff;
+      cursor: pointer;
+    }}
+    .status {{
+      font-size: 13px;
+      color: #333;
+    }}
+    .plot-area {{
+      flex: 1 1 auto;
+      min-height: 0;
+      position: relative;
+    }}
+    .plot-pane {{
+      position: absolute;
+      inset: 0;
+    }}
+    .hidden {{
+      display: none;
+    }}
+    .plot-pane .js-plotly-plot, .plot-pane .plot-container, .plot-pane .svg-container {{
+      width: 100% !important;
+      height: 100% !important;
+    }}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="tabs">
+      <button id="tab-ind" class="tab-btn" type="button">Espectros individuales</button>
+      <button id="tab-cum" class="tab-btn active" type="button">Espectros acumulados</button>
+    </div>
+    <div class="controls hidden" id="controls-ind">
+      <label for="td-filter"><strong>Buscar TD:</strong></label>
+      <input id="td-filter" type="text" placeholder="Ej: TD_20.out">
+      <label for="td-select"><strong>Seleccionar TD:</strong></label>
+      <select id="td-select" multiple size="1" title="Podés seleccionar varios TD (Ctrl/Cmd + click)."></select>
+      <button id="td-clear" type="button">Limpiar</button>
+      <span class="status" id="td-status"></span>
+    </div>
+    <div class="controls" id="controls-cum">
+      <label><strong>Vista:</strong></label>
+      <button id="cum-sum" class="toggle-btn active" type="button">Suma acumulada</button>
+      <button id="cum-avg" class="toggle-btn" type="button">Espectro promedio</button>
+      <span class="status" id="cum-status">Mostrando suma acumulada</span>
+    </div>
+    <div class="plot-area">
+      <div class="plot-pane hidden" id="pane-ind">
+        {fig_div_ind}
+      </div>
+      <div class="plot-pane" id="pane-cum">
+        {fig_div_cum}
+      </div>
+    </div>
+  </div>
+  <script>
+    (function() {{
+      const tdNames = {json.dumps(td_names)};
+      const baseColors = {json.dumps(trace_colors)};
+      const cumSumTraceCount = {cum_sum_trace_count};
+      const cumAvgTraceIndex = {cum_avg_trace_idx};
 
-    ax.set_ylabel(r"cumulative $\varepsilon$ / (L mol$^{-1}$ cm$^{-1}$)")
-    ax.legend()
-    ax.grid(True)
-    fig.savefig(os.path.join(folder, "espectros_sumados.png"))
-    print(f"Figura guardada: {os.path.join(folder, 'espectros_sumados.png')}")
+      const input = document.getElementById("td-filter");
+      const select = document.getElementById("td-select");
+      const btn = document.getElementById("td-clear");
+      const status = document.getElementById("td-status");
+      const controlsInd = document.getElementById("controls-ind");
+      const controlsCum = document.getElementById("controls-cum");
+      const cumStatus = document.getElementById("cum-status");
+      const cumSumBtn = document.getElementById("cum-sum");
+      const cumAvgBtn = document.getElementById("cum-avg");
+      const paneInd = document.getElementById("pane-ind");
+      const paneCum = document.getElementById("pane-cum");
+      const tabInd = document.getElementById("tab-ind");
+      const tabCum = document.getElementById("tab-cum");
+      let cumMode = "sum";
+      const cumRanges = {{sum: null, avg: null}};
 
-    if args.show:
-        plt.show()
+      const gdInd = document.querySelector("#pane-ind .js-plotly-plot");
+      const gdCum = document.querySelector("#pane-cum .js-plotly-plot");
+
+      if (!gdInd || !gdCum || !window.Plotly) return;
+
+      function tdSortValue(name) {{
+        const m = String(name).match(/TD_(\\d+)/i);
+        return m ? parseInt(m[1], 10) : Number.POSITIVE_INFINITY;
+      }}
+
+      const uniqueNames = Array.from(new Set(tdNames)).sort(function(a, b) {{
+        const va = tdSortValue(a);
+        const vb = tdSortValue(b);
+        if (va !== vb) return va - vb;
+        return String(a).localeCompare(String(b), undefined, {{
+          numeric: true,
+          sensitivity: "base"
+        }});
+      }});
+      uniqueNames.forEach(function(name) {{
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        select.appendChild(opt);
+      }});
+
+      function applyFilter() {{
+        const q = input.value.trim().toLowerCase();
+        const selectedNames = new Set(
+          Array.from(select.selectedOptions).map(function(opt) {{ return opt.value; }})
+        );
+        const colors = [];
+        const widths = [];
+        const opacities = [];
+        let nMatch = 0;
+
+        for (let i = 0; i < tdNames.length; i++) {{
+          const matchesSelect = selectedNames.size > 0 ? selectedNames.has(tdNames[i]) : true;
+          const matchesText = q !== "" ? tdNames[i].toLowerCase().includes(q) : true;
+          const match = matchesSelect && matchesText;
+
+          if (selectedNames.size === 0 && q === "") {{
+            colors.push(baseColors[i]);
+            widths.push(1.5);
+            opacities.push(1.0);
+            continue;
+          }}
+          if (match) {{
+            nMatch += 1;
+            colors.push(baseColors[i]);
+            widths.push(2.5);
+            opacities.push(1.0);
+          }} else {{
+            colors.push("rgba(170,170,170,0.65)");
+            widths.push(1.0);
+            opacities.push(0.35);
+          }}
+        }}
+
+        Plotly.restyle(gdInd, {{
+          "line.color": colors,
+          "line.width": widths,
+          "opacity": opacities
+        }}, [...Array(tdNames.length).keys()]);
+
+        if (q === "") {{
+          if (selectedNames.size === 0) {{
+            status.textContent = "";
+          }} else {{
+            status.textContent =
+              "Seleccionados: " + selectedNames.size + " TD (" + nMatch + " traza/s)";
+          }}
+        }} else {{
+          if (selectedNames.size === 0) {{
+            status.textContent = "Coincidencias: " + nMatch + " / " + tdNames.length;
+          }} else {{
+            status.textContent =
+              "Coincidencias: " + nMatch + " / " + tdNames.length +
+              " (seleccionados: " + selectedNames.size + ")";
+          }}
+        }}
+      }}
+
+      function setCumulativeMode(mode) {{
+        const prevMode = cumMode;
+        const currentLayout = gdCum.layout || {{}};
+        const hasCurrentRange =
+          Array.isArray(currentLayout.xaxis && currentLayout.xaxis.range) &&
+          Array.isArray(currentLayout.yaxis && currentLayout.yaxis.range);
+        if (hasCurrentRange) {{
+          cumRanges[prevMode] = {{
+            x: [currentLayout.xaxis.range[0], currentLayout.xaxis.range[1]],
+            y: [currentLayout.yaxis.range[0], currentLayout.yaxis.range[1]]
+          }};
+        }} else {{
+          cumRanges[prevMode] = null;
+        }}
+
+        cumMode = mode;
+        const nTraces = gdCum.data.length;
+        const visible = new Array(nTraces).fill(false);
+        if (mode === "avg") {{
+          if (cumAvgTraceIndex >= 0 && cumAvgTraceIndex < nTraces) {{
+            visible[cumAvgTraceIndex] = true;
+          }}
+          cumStatus.textContent = "Mostrando espectro promedio";
+          cumAvgBtn.classList.add("active");
+          cumSumBtn.classList.remove("active");
+        }} else {{
+          for (let i = 0; i < Math.min(cumSumTraceCount, nTraces); i++) {{
+            visible[i] = true;
+          }}
+          cumStatus.textContent = "Mostrando suma acumulada";
+          cumSumBtn.classList.add("active");
+          cumAvgBtn.classList.remove("active");
+        }}
+        Plotly.restyle(gdCum, {{"visible": visible}}, [...Array(nTraces).keys()]);
+
+        const targetRange = cumRanges[mode];
+        if (targetRange && targetRange.x && targetRange.y) {{
+          Plotly.relayout(gdCum, {{
+            "xaxis.autorange": false,
+            "yaxis.autorange": false,
+            "xaxis.range": targetRange.x,
+            "yaxis.range": targetRange.y
+          }});
+        }} else {{
+          Plotly.relayout(gdCum, {{
+            "xaxis.autorange": true,
+            "yaxis.autorange": true
+          }});
+        }}
+      }}
+
+      function setView(view) {{
+        if (view === "ind") {{
+          paneInd.classList.remove("hidden");
+          paneCum.classList.add("hidden");
+          controlsInd.classList.remove("hidden");
+          controlsCum.classList.add("hidden");
+          tabInd.classList.add("active");
+          tabCum.classList.remove("active");
+        }} else {{
+          paneCum.classList.remove("hidden");
+          paneInd.classList.add("hidden");
+          controlsInd.classList.add("hidden");
+          controlsCum.classList.remove("hidden");
+          tabCum.classList.add("active");
+          tabInd.classList.remove("active");
+          setCumulativeMode(cumMode);
+        }}
+        resizePlots();
+        // El plot oculto al cargar puede quedar angosto; forzamos resize al mostrar pestaña.
+        window.requestAnimationFrame(function() {{
+          Plotly.Plots.resize(gdInd);
+          Plotly.Plots.resize(gdCum);
+        }});
+        setTimeout(function() {{
+          Plotly.Plots.resize(gdInd);
+          Plotly.Plots.resize(gdCum);
+        }}, 80);
+      }}
+
+      function resizePlots() {{
+        const vh = window.innerHeight || document.documentElement.clientHeight || 800;
+        const tabsH = document.querySelector(".tabs").offsetHeight || 0;
+        const controlsIndH = controlsInd.classList.contains("hidden") ? 0 : controlsInd.offsetHeight;
+        const controlsCumH = controlsCum.classList.contains("hidden") ? 0 : controlsCum.offsetHeight;
+        const controlsH = controlsIndH + controlsCumH;
+        const target = Math.max(320, vh - tabsH - controlsH - 6);
+        const plotW = document.querySelector(".plot-area").clientWidth || window.innerWidth;
+
+        paneInd.style.height = target + "px";
+        paneCum.style.height = target + "px";
+
+        Plotly.relayout(gdInd, {{height: target, width: plotW}});
+        Plotly.relayout(gdCum, {{height: target, width: plotW}});
+      }}
+
+      input.addEventListener("input", applyFilter);
+      select.addEventListener("change", applyFilter);
+      btn.addEventListener("click", function() {{
+        input.value = "";
+        Array.from(select.options).forEach(function(opt) {{ opt.selected = false; }});
+        applyFilter();
+        input.focus();
+      }});
+      gdCum.on("plotly_relayout", function(ev) {{
+        if (!ev) return;
+        const xr0 = ev["xaxis.range[0]"];
+        const xr1 = ev["xaxis.range[1]"];
+        const yr0 = ev["yaxis.range[0]"];
+        const yr1 = ev["yaxis.range[1]"];
+        if (
+          xr0 !== undefined && xr1 !== undefined &&
+          yr0 !== undefined && yr1 !== undefined
+        ) {{
+          cumRanges[cumMode] = {{x: [xr0, xr1], y: [yr0, yr1]}};
+        }}
+        if (ev["xaxis.autorange"] === true || ev["yaxis.autorange"] === true) {{
+          cumRanges[cumMode] = null;
+        }}
+      }});
+      cumSumBtn.addEventListener("click", function() {{ setCumulativeMode("sum"); }});
+      cumAvgBtn.addEventListener("click", function() {{ setCumulativeMode("avg"); }});
+      tabInd.addEventListener("click", function() {{ setView("ind"); }});
+      tabCum.addEventListener("click", function() {{ setView("cum"); }});
+      window.addEventListener("resize", resizePlots);
+
+      applyFilter();
+      setView("cum");
+    }})();
+  </script>
+</body>
+</html>
+"""
+            with open(html_path, "w", encoding="utf-8") as f:
+                f.write(html_doc)
+            print(f"HTML interactivo guardado en: {html_path}")
+
+            open_status = open_html_in_browser(html_path)
+            if open_status == "html":
+                print("HTML abierto automáticamente en el navegador.")
+            elif open_status == "folder":
+                print(
+                    "Aviso: no pude abrir el HTML automáticamente. "
+                    "Se abrió la carpeta con explorer.exe ."
+                )
+            else:
+                print("Aviso: no pude abrir ni el HTML ni la carpeta automáticamente.")
 
 
 # ----------------------------------------------------------------------
@@ -984,6 +1443,8 @@ def main():
             "  --maxonly             Listar solo el máximo absoluto por espectro (modo carpeta).\n"
             "  --allpeaks            Listar todos los máximos locales (modo carpeta).\n"
             "  --printall            En modo carpeta, guarda PNG individuales TD_*.out-nea-eps.png.\n"
+            "  --html                En modo carpeta, genera HTML interactivo (default: activado).\n"
+            "  --no-html             En modo carpeta, desactiva el HTML interactivo.\n"
             "  -e, --export          En modo archivo único, exporta ε como espectro_*.dat o espectroE_*.dat.\n"
         ),
         formatter_class=argparse.RawTextHelpFormatter,
@@ -1108,13 +1569,21 @@ def main():
         help="(Modo carpeta) Listar todos los máximos locales dentro del rango.",
     )
 
-    # HTML interactivo (plotly) en modo carpeta
-    parser.add_argument(
+    # HTML interactivo (plotly) en modo carpeta: activado por defecto
+    html_group = parser.add_mutually_exclusive_group()
+    html_group.add_argument(
         "--html",
-        default=False,
+        dest="html",
         action="store_true",
-        help="(Modo carpeta) Generar HTML interactivo con espectros individuales.",
+        help="(Modo carpeta) Generar HTML interactivo (default: activado).",
     )
+    html_group.add_argument(
+        "--no-html",
+        dest="html",
+        action="store_false",
+        help="(Modo carpeta) No generar HTML interactivo.",
+    )
+    parser.set_defaults(html=True)
 
     # exportar datos en modo archivo único
     parser.add_argument(
