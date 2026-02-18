@@ -245,6 +245,46 @@ def parse_selection_string(sel, n_files):
     return sorted(indices)
 
 
+def parse_number_ranges(list_str, flag_name="--exclude"):
+    """
+    Parsea una lista de números y rangos tipo:
+      '10'          -> {10}
+      '10,12,15'    -> {10,12,15}
+      '10-13,20'    -> {10,11,12,13,20}
+    """
+    if list_str is None:
+        return set()
+
+    nums = set()
+    parts = list_str.split(",")
+    for part in parts:
+        p = part.strip()
+        if not p:
+            continue
+        if "-" in p:
+            a_str, b_str = p.split("-", 1)
+            try:
+                a = int(a_str)
+                b = int(b_str)
+            except ValueError:
+                print(f"Advertencia: valor de {flag_name} ignorado: '{p}' (rango inválido)")
+                continue
+            if a > b:
+                print(f"Advertencia: valor de {flag_name} ignorado: '{p}' (rango inválido)")
+                continue
+            for k in range(a, b + 1):
+                nums.add(k)
+        else:
+            try:
+                k = int(p)
+            except ValueError:
+                print(f"Advertencia: valor de {flag_name} ignorado: '{p}' (no es entero)")
+                continue
+            nums.add(k)
+
+    return nums
+
+
 def open_html_in_browser(html_path):
     """
     Intenta abrir el HTML en el navegador por defecto.
@@ -472,7 +512,7 @@ def process_folder(folder, args):
     Modo batch:
       - Usa 'folder' (o '.' si no se pasó nada)
       - Busca TD_*.out
-      - Pregunta qué índices usar (1..N, o rangos tipo 1-3,5-7, etc.)
+      - Usa todos por defecto (o --select para elegir índices)
       - Aplica --exclude (por número de TD)
       - Para cada TD seleccionado:
           * intenta calcular espectro NEA
@@ -504,14 +544,8 @@ def process_folder(folder, args):
     for i, f in enumerate(td_files_all, start=1):
         print(f"  {i:2d}: {os.path.basename(f)}")
 
-    # pedir selección interactiva
-    try:
-        sel_str = input(
-            "\nIndicá el rango que querés usar "
-            "(ej: '1-15', '1,2,3,4,7-10'; ENTER = todos): "
-        )
-    except EOFError:
-        sel_str = ""
+    # selección: por defecto todos; opcional con --select
+    sel_str = args.select if args.select is not None else ""
 
     try:
         idx_list = parse_selection_string(sel_str, n_total)
@@ -522,27 +556,18 @@ def process_folder(folder, args):
     # aplicar la selección
     td_files_sel = [td_files_all[i] for i in idx_list]
 
-    # procesar --exclude: números de TD_*.out a excluir (por ejemplo '10,13')
-    exclude_ids = set()
-    if args.exclude is not None:
-        for part in args.exclude.split(","):
-            p = part.strip()
-            if not p:
-                continue
-            if not p.isdigit():
-                print(f"Advertencia: valor de --exclude ignorado: '{p}' (no es entero)")
-                continue
-            exclude_ids.add(p)
+    # procesar --exclude: números de TD_*.out a excluir (por ejemplo '10,13' o '10-20')
+    exclude_ids = parse_number_ranges(args.exclude, flag_name="--exclude")
 
     if exclude_ids:
-        print(f"\nSe excluirán los TD con números: {', '.join(sorted(exclude_ids))}")
+        print(f"\nSe excluirán los TD con números: {', '.join(str(n) for n in sorted(exclude_ids))}")
 
     # filtrar td_files_sel según exclude_ids
     td_files = []
     for f in td_files_sel:
         base = os.path.basename(f)
         match = re.search(r"TD_(\d+)", base)
-        if match and match.group(1) in exclude_ids:
+        if match and int(match.group(1)) in exclude_ids:
             print(f"  Excluyendo {base} por --exclude")
             continue
         td_files.append(f)
@@ -1426,7 +1451,7 @@ def main():
             "        lambda (default) -> ε(λ)\n"
             "        energy          -> ε(E)\n"
             "  -x0, --startx FLOAT   Límite inferior del eje x (en nm).\n"
-            "                        Si no se especifica, se usa 250 nm.\n"
+            "                        Si no se especifica, se usa 200 nm.\n"
             "  -x1, --endx   FLOAT   Límite superior del eje x (en nm).\n"
             "                        Si no se especifica, se usa 1000 nm.\n"
             "  -wev, --linewidth_ev FLOAT\n"
@@ -1436,7 +1461,8 @@ def main():
             "                        Si no se especifica -s/--show, se asume True.\n"
             "  -n, --nosave          No guarda los PNG que se pudieran generar.\n"
             "  --nref FLOAT          Índice de refracción (default: 1.33, agua en el visible).\n"
-            "  --exclude LIST        En modo carpeta, excluye TD_N.out por número. Ej: --exclude 10,12,15\n"
+            "  --exclude LIST        En modo carpeta, excluye TD_N.out por número o rango. Ej: --exclude 10,12,15 o 10-20\n"
+            "  --select LIST         En modo carpeta, selecciona índices 1..N o rangos (ej: 1-3,5,7).\n"
             "  --maxlist             En modo carpeta, genera CSV con máximos individuales.\n"
             "  --maxrange XMIN XMAX  Rango de x para buscar máximos (nm en modo lambda, eV en modo energy).\n"
             "  --maxeps FLOAT        Umbral mínimo de epsilon para listar máximos.\n"
@@ -1520,7 +1546,14 @@ def main():
         "--exclude",
         type=str,
         default=None,
-        help="Números de TD_*.out a excluir, ej: '10' o '10,12,15' (solo modo carpeta).",
+        help="Números de TD_*.out a excluir, ej: '10', '10,12,15' o '10-20' (solo modo carpeta).",
+    )
+    # selección explícita por índice (modo carpeta)
+    parser.add_argument(
+        "--select",
+        type=str,
+        default=None,
+        help="Selecciona índices 1..N o rangos, ej: '1-15' o '1,2,3,7-10' (solo modo carpeta).",
     )
     # no marcar picos en el espectro final (modo carpeta)
     parser.add_argument(
@@ -1597,9 +1630,9 @@ def main():
     args = parser.parse_args()
 
     # --- defaults "suaves" ---
-    # Si no se dio -x0/-x1, usar 250–1000 nm
+    # Si no se dio -x0/-x1, usar 200–1000 nm
     if args.startx is None:
-        args.startx = 250.0
+        args.startx = 200.0
     if args.endx is None:
         args.endx = 1000.0
 
