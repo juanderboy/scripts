@@ -666,6 +666,27 @@ def main():
             if label:
                 atom_labels[aid] = label
 
+    if orca_mode:
+        q_ts_out = "mulliken_charge_timeseries.dat"
+        q_avg_out = "mulliken_charge_averages.dat"
+        q_hist_prefix = "mulliken_charge_hist"
+        q_modes_out = "mulliken_charge_modes.dat"
+        s_ts_out = "mulliken_spin_timeseries.dat"
+        s_avg_out = "mulliken_spin_averages.dat"
+        s_hist_prefix = "mulliken_spin_hist"
+        s_modes_out = "mulliken_spin_modes.dat"
+        mulliken_fig_out = "mulliken_histograms.png"
+    else:
+        q_ts_out = "mq_charge_timeseries.dat"
+        q_avg_out = "mq_charge_averages.dat"
+        q_hist_prefix = "mq_charge_hist"
+        q_modes_out = "mq_charge_modes.dat"
+        s_ts_out = "ms_spin_timeseries.dat"
+        s_avg_out = "ms_spin_averages.dat"
+        s_hist_prefix = "ms_spin_hist"
+        s_modes_out = "ms_spin_modes.dat"
+        mulliken_fig_out = "qs_histograms.png"
+
     # --- Análisis de cargas ---
     times, per_atom_q, hist_q = build_timeseries_and_stats(
         charge_full,
@@ -673,10 +694,10 @@ def main():
         atom_ids,
         kind="charge",
         header_start="# Mulliken Population Analysis",
-        ts_outname="mq_charge_timeseries.dat",
-        avg_outname="mq_charge_averages.dat",
-        hist_prefix="mq_charge_hist",
-        modes_outname="mq_charge_modes.dat",
+        ts_outname=q_ts_out,
+        avg_outname=q_avg_out,
+        hist_prefix=q_hist_prefix,
+        modes_outname=q_modes_out,
         nbins_hist=50
     )
 
@@ -690,10 +711,10 @@ def main():
             atom_ids,
             kind="spin",
             header_start="# Mulliken Spin Population Analysis",
-            ts_outname="ms_spin_timeseries.dat",
-            avg_outname="ms_spin_averages.dat",
-            hist_prefix="ms_spin_hist",
-            modes_outname="ms_spin_modes.dat",
+            ts_outname=s_ts_out,
+            avg_outname=s_avg_out,
+            hist_prefix=s_hist_prefix,
+            modes_outname=s_modes_out,
             nbins_hist=50,
             spin_sign=spin_sign
         )
@@ -740,8 +761,18 @@ def main():
         hist_charge=hist_q,
         hist_spin=hist_s if have_spin else {},
         atom_labels=atom_labels,
-        fig_outname="qs_histograms.png"
+        fig_outname=mulliken_fig_out
     )
+
+    # Mantener compatibilidad con nombre histórico cuando se trabaja con ORCA
+    if orca_mode and mulliken_fig_out != "qs_histograms.png":
+        make_combined_hist_figure(
+            atom_ids,
+            hist_charge=hist_q,
+            hist_spin=hist_s if have_spin else {},
+            atom_labels=atom_labels,
+            fig_outname="qs_histograms.png"
+        )
 
     # --- ORCA: análisis Loewdin adicional ---
     if orca_mode:
