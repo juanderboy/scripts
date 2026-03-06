@@ -30,6 +30,23 @@ def get_sorted_files(prefix):
     files.sort(key=lambda x: x[0])
     return [f for _, f in files]
 
+def get_sorted_orca_files(prefix="TD"):
+    """
+    Busca archivos TD_*.out o TD_*.dat y los ordena por el número.
+    """
+    patterns = [f"{prefix}_*.out", f"{prefix}_*.dat"]
+    files = {}
+    for pattern in patterns:
+        for fname in glob.glob(pattern):
+            m = re.match(rf"{prefix}_(\d+)\.(out|dat)$", fname)
+            if m:
+                idx = int(m.group(1))
+                ext = m.group(2)
+                # Preferir .out si hay duplicados
+                if idx not in files or ext == "out":
+                    files[idx] = fname
+    return [files[k] for k in sorted(files.keys())]
+
 
 def merge_files(files, outname):
     """
@@ -113,7 +130,8 @@ def build_timeseries_and_stats(
     avg_outname,
     hist_prefix,
     modes_outname,
-    nbins_hist=50
+    nbins_hist=50,
+    spin_sign=1.0
 ):
     """
     Analiza un archivo full (mq_full.dat o ms_full.dat).
@@ -174,9 +192,9 @@ def build_timeseries_and_stats(
                     value = float(parts[2])
                 except ValueError:
                     continue
-                # Invert spin sign so that the total Mulliken spin population sums to +1
+                # Permite ajustar el signo del spin (LIO requiere invertirlo)
                 if kind == "spin":
-                    value = -value
+                    value = spin_sign * value
                 if atom_idx in current_vals:
                     current_vals[atom_idx] = value
 
@@ -310,6 +328,133 @@ def build_timeseries_and_stats(
 
 
 # ==========================
+# Utilidad: lista de átomos
+# ==========================
+
+def get_atom_list_from_full(fullfile, header_start, lio=False):
+    """
+    Lee el primer bloque de un archivo full y retorna lista de (atom_id, atom_type).
+    """
+    atoms = []
+    inside_frame = False
+    z_to_symbol = {
+        1: "H", 2: "He",
+        3: "Li", 4: "Be", 5: "B", 6: "C", 7: "N", 8: "O", 9: "F", 10: "Ne",
+        11: "Na", 12: "Mg", 13: "Al", 14: "Si", 15: "P", 16: "S", 17: "Cl", 18: "Ar",
+        19: "K", 20: "Ca", 21: "Sc", 22: "Ti", 23: "V", 24: "Cr", 25: "Mn", 26: "Fe", 27: "Co", 28: "Ni", 29: "Cu", 30: "Zn",
+        31: "Ga", 32: "Ge", 33: "As", 34: "Se", 35: "Br", 36: "Kr",
+        37: "Rb", 38: "Sr", 39: "Y", 40: "Zr", 41: "Nb", 42: "Mo", 43: "Tc", 44: "Ru", 45: "Rh", 46: "Pd", 47: "Ag", 48: "Cd",
+        49: "In", 50: "Sn", 51: "Sb", 52: "Te", 53: "I", 54: "Xe",
+        55: "Cs", 56: "Ba", 57: "La", 58: "Ce", 59: "Pr", 60: "Nd", 61: "Pm", 62: "Sm", 63: "Eu", 64: "Gd", 65: "Tb", 66: "Dy", 67: "Ho", 68: "Er", 69: "Tm", 70: "Yb", 71: "Lu",
+        72: "Hf", 73: "Ta", 74: "W", 75: "Re", 76: "Os", 77: "Ir", 78: "Pt", 79: "Au", 80: "Hg",
+        81: "Tl", 82: "Pb", 83: "Bi", 84: "Po", 85: "At", 86: "Rn",
+        87: "Fr", 88: "Ra", 89: "Ac", 90: "Th", 91: "Pa", 92: "U", 93: "Np", 94: "Pu", 95: "Am", 96: "Cm", 97: "Bk", 98: "Cf", 99: "Es", 100: "Fm", 101: "Md", 102: "No", 103: "Lr",
+        104: "Rf", 105: "Db", 106: "Sg", 107: "Bh", 108: "Hs", 109: "Mt", 110: "Ds", 111: "Rg", 112: "Cn",
+        113: "Nh", 114: "Fl", 115: "Mc", 116: "Lv", 117: "Ts", 118: "Og"
+    }
+    with open(fullfile, "r") as f:
+        for line in f:
+            stripped = line.strip()
+            if stripped.startswith(header_start):
+                inside_frame = True
+                continue
+            if not inside_frame:
+                continue
+            if "Total Charge" in stripped:
+                break
+            if not stripped or stripped.startswith("#"):
+                continue
+            parts = stripped.split()
+            if len(parts) >= 3 and parts[0].isdigit():
+                atom_idx = int(parts[0])
+                atom_type = parts[1]
+                if lio and atom_type.isdigit():
+                    z = int(atom_type)
+                    atom_type = z_to_symbol.get(z, atom_type)
+                atoms.append((atom_idx, atom_type))
+    return atoms
+
+
+# ==========================
+# ORCA: parseo de Mulliken
+# ==========================
+
+def extract_orca_population_block(fname, header_line):
+    """
+    Extrae la tabla de cargas/spines (Mulliken o Loewdin) desde un output de ORCA.
+    Retorna lista de tuplas: (atom_idx, element, charge, spin)
+    """
+    data = []
+    in_section = False
+    with open(fname, "r") as f:
+        for line in f:
+            if header_line in line:
+                in_section = True
+                continue
+            if not in_section:
+                continue
+
+            stripped = line.strip()
+            if not stripped:
+                break
+            if stripped.startswith("Sum of atomic charges"):
+                break
+            if stripped.startswith("MULLIKEN REDUCED"):
+                break
+            if stripped.startswith("---"):
+                continue
+
+            m = re.match(r"^\s*(\d+)\s+([A-Za-z]+)\s*:\s*([-\d\.Ee+]+)\s+([-\d\.Ee+]+)", line)
+            if m:
+                atom_idx = int(m.group(1))
+                element = m.group(2)
+                charge = float(m.group(3))
+                spin = float(m.group(4))
+                data.append((atom_idx, element, charge, spin))
+
+    return data
+
+
+def build_orca_full_files(orca_files, out_charge, out_spin, label, header_line):
+    """
+    A partir de múltiples TD_*.out/.dat de ORCA arma:
+      - archivo de cargas
+      - archivo de spines
+    con el formato que espera build_timeseries_and_stats.
+    """
+    if not orca_files:
+        print("Error: no se encontraron archivos 'TD_*.out' o 'TD_*.dat' (ORCA).")
+        sys.exit(1)
+
+    with open(out_charge, "w") as q_out, open(out_spin, "w") as s_out:
+        for fname in orca_files:
+            block = extract_orca_population_block(fname, header_line)
+            if not block:
+                print(f"[WARN] No se encontró tabla {label} en '{fname}'.")
+                continue
+
+            q_out.write(f"# {label} Population Analysis\n")
+            q_out.write("# Atom   Type   Population\n")
+            s_out.write(f"# {label} Spin Population Analysis\n")
+            s_out.write("# Atom   Type   Population\n")
+
+            sum_q = 0.0
+            sum_s = 0.0
+            for atom_idx, element, charge, spin in block:
+                q_out.write(f"{atom_idx:4d} {element:>3s} {charge: .7f}\n")
+                s_out.write(f"{atom_idx:4d} {element:>3s} {spin: .7f}\n")
+                sum_q += charge
+                sum_s += spin
+
+            # Línea de cierre compatible con el parser
+            q_out.write(f"  Total Charge = {sum_q: .7f}\n\n")
+            s_out.write(f"  Total Charge = {sum_s: .7f}\n\n")
+
+    print(f"[OK] Archivo ORCA de cargas ({label}) combinado en '{out_charge}'.")
+    print(f"[OK] Archivo ORCA de spines ({label}) combinado en '{out_spin}'.")
+
+
+# ==========================
 # Figura combinada q/s
 # ==========================
 
@@ -416,27 +561,73 @@ def make_combined_hist_figure(
 # ==========================
 
 def main():
-    # Archivos de cargas
-    mq_files = get_sorted_files("mq")
-    if not mq_files:
-        print("Error: no se encontraron archivos 'mq_*.dat' (cargas).")
+    # Elegir programa
+    prog = input("Ingrese el programa con el cual se trabajará (LIO/ORCA): ").strip().lower()
+    if prog not in ("lio", "orca", ""):
+        print("Error: programa no reconocido. Use 'LIO' u 'ORCA'.")
         sys.exit(1)
+    if prog == "":
+        prog = "lio"
 
-    print("Archivos de cargas (mq_*.dat) que se van a combinar:")
-    for f in mq_files:
-        print("  ", f)
-    merge_files(mq_files, "mq_full.dat")
+    have_spin = False
+    spin_sign = 1.0
+    orca_mode = (prog == "orca")
 
-    # Archivos de spin (opcional)
-    ms_files = get_sorted_files("ms")
-    have_spin = bool(ms_files)
-    if have_spin:
-        print("Archivos de spin (ms_*.dat) que se van a combinar:")
-        for f in ms_files:
+    if prog == "lio":
+        # Archivos de cargas
+        mq_files = get_sorted_files("mq")
+        if not mq_files:
+            print("Error: no se encontraron archivos 'mq_*.dat' (cargas).")
+            sys.exit(1)
+
+        print("Archivos de cargas (mq_*.dat) que se van a combinar:")
+        for f in mq_files:
             print("  ", f)
-        merge_files(ms_files, "ms_full.dat")
+        merge_files(mq_files, "mq_full.dat")
+
+        # Archivos de spin (opcional)
+        ms_files = get_sorted_files("ms")
+        have_spin = bool(ms_files)
+        if have_spin:
+            print("Archivos de spin (ms_*.dat) que se van a combinar:")
+            for f in ms_files:
+                print("  ", f)
+            merge_files(ms_files, "ms_full.dat")
+        else:
+            print("[INFO] No se encontraron archivos 'ms_*.dat'. Solo se analizarán cargas.")
+
+        charge_full = "mq_full.dat"
+        spin_full = "ms_full.dat"
+        spin_sign = -1.0
     else:
-        print("[INFO] No se encontraron archivos 'ms_*.dat'. Solo se analizarán cargas.")
+        # ORCA: cada TD_*.out/.dat es un frame
+        orca_files = get_sorted_orca_files("TD")
+        if not orca_files:
+            print("Error: no se encontraron archivos 'TD_*.out' o 'TD_*.dat'.")
+            sys.exit(1)
+
+        print("Archivos ORCA (TD_*.out/.dat) que se van a analizar:")
+        for f in orca_files:
+            print("  ", f)
+
+        build_orca_full_files(
+            orca_files,
+            "mq_orca_todo.dat",
+            "ms_orca_todo.dat",
+            label="Mulliken",
+            header_line="MULLIKEN ATOMIC CHARGES AND SPIN POPULATIONS"
+        )
+        build_orca_full_files(
+            orca_files,
+            "lq_orca_todo.dat",
+            "ls_orca_todo.dat",
+            label="Loewdin",
+            header_line="LOEWDIN ATOMIC CHARGES AND SPIN POPULATIONS"
+        )
+        have_spin = True
+        charge_full = "mq_orca_todo.dat"
+        spin_full = "ms_orca_todo.dat"
+        spin_sign = 1.0
 
     # Preguntar dt y átomos
     dt_str = input("Ingrese el valor del time step en picosegundos (por ejemplo, 0.001): ").strip()
@@ -445,6 +636,14 @@ def main():
     except ValueError:
         print("Error: el time step debe ser un número (float).")
         sys.exit(1)
+
+    # Mostrar lista de átomos disponibles
+    atoms_list = get_atom_list_from_full(charge_full, "# Mulliken Population Analysis", lio=(prog == "lio"))
+    if atoms_list:
+        print("\nLista de átomos disponibles (id, tipo):")
+        for aid, atype in atoms_list:
+            print(f"  {aid:4d}  {atype}")
+        print("")
 
     atoms_str = input("Ingrese los números de átomo a trackear, separados por espacios (por ejemplo: 45 46 47): ").strip()
     try:
@@ -467,9 +666,9 @@ def main():
             if label:
                 atom_labels[aid] = label
 
-    # --- Análisis de cargas (mq_full.dat) ---
+    # --- Análisis de cargas ---
     times, per_atom_q, hist_q = build_timeseries_and_stats(
-        "mq_full.dat",
+        charge_full,
         dt_ps,
         atom_ids,
         kind="charge",
@@ -481,12 +680,12 @@ def main():
         nbins_hist=50
     )
 
-    # --- Análisis de spin (ms_full.dat), si existe ---
+    # --- Análisis de spin, si existe ---
     hist_s = {}
     per_atom_s = {aid: np.array([]) for aid in atom_ids}
     if have_spin:
         _times_spin, per_atom_s, hist_s = build_timeseries_and_stats(
-            "ms_full.dat",
+            spin_full,
             dt_ps,
             atom_ids,
             kind="spin",
@@ -495,7 +694,8 @@ def main():
             avg_outname="ms_spin_averages.dat",
             hist_prefix="ms_spin_hist",
             modes_outname="ms_spin_modes.dat",
-            nbins_hist=50
+            nbins_hist=50,
+            spin_sign=spin_sign
         )
         # Se asume mismo dt y cantidad de frames; si hiciera falta se puede matchear más fino
     else:
@@ -543,7 +743,75 @@ def main():
         fig_outname="qs_histograms.png"
     )
 
+    # --- ORCA: análisis Loewdin adicional ---
+    if orca_mode:
+        times_l, per_atom_q_l, hist_q_l = build_timeseries_and_stats(
+            "lq_orca_todo.dat",
+            dt_ps,
+            atom_ids,
+            kind="charge",
+            header_start="# Loewdin Population Analysis",
+            ts_outname="loewdin_charge_timeseries.dat",
+            avg_outname="loewdin_charge_averages.dat",
+            hist_prefix="loewdin_charge_hist",
+            modes_outname="loewdin_charge_modes.dat",
+            nbins_hist=50
+        )
+
+        hist_s_l = {}
+        per_atom_s_l = {aid: np.array([]) for aid in atom_ids}
+        _times_spin_l, per_atom_s_l, hist_s_l = build_timeseries_and_stats(
+            "ls_orca_todo.dat",
+            dt_ps,
+            atom_ids,
+            kind="spin",
+            header_start="# Loewdin Spin Population Analysis",
+            ts_outname="loewdin_spin_timeseries.dat",
+            avg_outname="loewdin_spin_averages.dat",
+            hist_prefix="loewdin_spin_hist",
+            modes_outname="loewdin_spin_modes.dat",
+            nbins_hist=50,
+            spin_sign=spin_sign
+        )
+
+        for aid in atom_ids:
+            q_vals = np.asarray(per_atom_q_l.get(aid, []), dtype=float)
+
+            if times_l.size != q_vals.size:
+                n = min(times_l.size, q_vals.size)
+                t_use = times_l[:n]
+                q_use = q_vals[:n]
+            else:
+                t_use = times_l
+                q_use = q_vals
+
+            atom_out = f"atom_{aid}_loewdin_timeseries.dat"
+            with open(atom_out, "w") as out:
+                s_array = np.asarray(per_atom_s_l.get(aid, []), dtype=float)
+                if s_array.size > 0:
+                    if s_array.size != t_use.size:
+                        n = min(t_use.size, s_array.size)
+                        t_use = t_use[:n]
+                        q_use = q_use[:n]
+                        s_array = s_array[:n]
+                    out.write("# time_ps  charge  spin\n")
+                    for t, q, s in zip(t_use, q_use, s_array):
+                        out.write(f"{t: .7f} {q: .7f} {s: .7f}\n")
+                else:
+                    out.write("# time_ps  charge\n")
+                    for t, q in zip(t_use, q_use):
+                        out.write(f"{t: .7f} {q: .7f}\n")
+
+            print(f"[OK] Serie temporal Loewdin para átomo {aid} escrita en '{atom_out}'.")
+
+        make_combined_hist_figure(
+            atom_ids,
+            hist_charge=hist_q_l,
+            hist_spin=hist_s_l,
+            atom_labels=atom_labels,
+            fig_outname="loewdin_histograms.png"
+        )
+
 
 if __name__ == "__main__":
     main()
-
