@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import glob
+import os
 import re
 import sys
 import math
@@ -30,21 +31,84 @@ def get_sorted_files(prefix):
     files.sort(key=lambda x: x[0])
     return [f for _, f in files]
 
-def get_sorted_orca_files(prefix="TD"):
+
+def prompt_numbered_choice(title, options, default_idx=None):
     """
-    Busca archivos TD_*.out o TD_*.dat y los ordena por el número.
+    Muestra un menú numerado y retorna el valor asociado a la opción elegida.
+    options: lista de tuplas (etiqueta, valor)
+    default_idx: índice 0-based de la opción por defecto, o None
     """
-    patterns = [f"{prefix}_*.out", f"{prefix}_*.dat"]
+    print(title)
+    for idx, (label, _value) in enumerate(options, start=1):
+        default_tag = " [default]" if default_idx is not None and idx - 1 == default_idx else ""
+        print(f"  {idx}. {label}{default_tag}")
+
+    prompt = "Seleccione una opción por número"
+    if default_idx is not None:
+        prompt += f" (Enter = {default_idx + 1})"
+    prompt += ": "
+
+    choice = input(prompt).strip()
+    if choice == "":
+        if default_idx is None:
+            print("Error: debe seleccionar una opción.")
+            sys.exit(1)
+        return options[default_idx][1]
+
+    if not choice.isdigit():
+        print("Error: debe ingresar el número de una opción.")
+        sys.exit(1)
+
+    selected = int(choice)
+    if selected < 1 or selected > len(options):
+        print("Error: opción fuera de rango.")
+        sys.exit(1)
+
+    return options[selected - 1][1]
+
+def get_sorted_orca_files(prefix=None):
+    """
+    Busca archivos ORCA con formato <prefijo>_N.out o <prefijo>_N.dat
+    y los ordena por el número N.
+
+    Si prefix es None o "", autodetecta cualquier prefijo.
+    """
+    normalized_prefix = prefix.strip() if prefix else None
+    patterns = [f"{normalized_prefix}_*.out", f"{normalized_prefix}_*.dat"] if normalized_prefix else ["*_*.out", "*_*.dat"]
     files = {}
+    detected_prefixes = set()
+
+    if normalized_prefix:
+        regex = re.compile(rf"^{re.escape(normalized_prefix)}_(\d+)\.(out|dat)$")
+    else:
+        regex = re.compile(r"^(.+?)_(\d+)\.(out|dat)$")
+
     for pattern in patterns:
         for fname in glob.glob(pattern):
-            m = re.match(rf"{prefix}_(\d+)\.(out|dat)$", fname)
-            if m:
+            m = regex.match(fname)
+            if not m:
+                continue
+
+            if normalized_prefix:
                 idx = int(m.group(1))
                 ext = m.group(2)
-                # Preferir .out si hay duplicados
-                if idx not in files or ext == "out":
-                    files[idx] = fname
+            else:
+                detected_prefix = m.group(1)
+                idx = int(m.group(2))
+                ext = m.group(3)
+                detected_prefixes.add(detected_prefix)
+
+            # Preferir .out si hay duplicados
+            if idx not in files or ext == "out":
+                files[idx] = fname
+
+    if not normalized_prefix and len(detected_prefixes) > 1:
+        print("Error: se detectaron múltiples prefijos ORCA en la carpeta:")
+        for detected_prefix in sorted(detected_prefixes):
+            print(f"  {detected_prefix}")
+        print("Ingrese el prefijo deseado explícitamente para evitar mezclar archivos.")
+        sys.exit(1)
+
     return [files[k] for k in sorted(files.keys())]
 
 
@@ -116,43 +180,21 @@ def analyze_modes_kde(vals, n_grid=200, prominence_factor=0.05):
     return xs, dens, peak_positions, peak_heights
 
 
-# ==========================
-# Lectura de archivos full y estadística
-# ==========================
-
-def build_timeseries_and_stats(
-    fullfile,
-    dt_ps,
-    atom_ids,
-    kind,
-    header_start,
-    ts_outname,
-    avg_outname,
-    hist_prefix,
-    modes_outname,
-    nbins_hist=50,
-    spin_sign=1.0
-):
+def parse_frame_data(fullfile, dt_ps, atom_ids, kind, header_start, spin_sign=1.0):
     """
-    Analiza un archivo full (mq_full.dat o ms_full.dat).
-
-    kind: 'charge' o 'spin'
-    header_start:
-        - "# Mulliken Population Analysis"  (cargas)
-        - "# Mulliken Spin Population Analysis" (spin)
+    Parsea un archivo full y retorna datos por frame.
 
     Returns
     -------
     times : np.ndarray
-        Vector de tiempos (ps) para cada frame.
-    per_atom_values : dict
-        {atom_id: np.ndarray de valores válidos (sin NaN)}.
-    hist_data_for_plot : dict
-        {atom_id: dict con info de histograma y KDE para ploteo}.
+    values : np.ndarray
+        shape: (n_frames, n_atoms)
+    frame_totals : np.ndarray
+        Valor total informado al cierre de cada frame.
     """
-
     atom_ids = list(atom_ids)
-    data = []  # [time_ps, val_atom1, val_atom2, ...]
+    data = []
+    frame_totals = []
     current_vals = {aid: None for aid in atom_ids}
     frame_index = -1
     inside_frame = False
@@ -179,6 +221,11 @@ def build_timeseries_and_stats(
                         v = float("nan")
                     row.append(v)
                 data.append(row)
+                try:
+                    total_val = float(stripped.split("=")[-1])
+                except ValueError:
+                    total_val = float("nan")
+                frame_totals.append(total_val)
                 inside_frame = False
                 continue
 
@@ -192,11 +239,73 @@ def build_timeseries_and_stats(
                     value = float(parts[2])
                 except ValueError:
                     continue
-                # Permite ajustar el signo del spin (LIO requiere invertirlo)
                 if kind == "spin":
                     value = spin_sign * value
                 if atom_idx in current_vals:
                     current_vals[atom_idx] = value
+
+    if not data:
+        return np.array([]), np.empty((0, len(atom_ids))), np.array([])
+
+    data = np.array(data, dtype=float)
+    return data[:, 0], data[:, 1:], np.asarray(frame_totals, dtype=float)
+
+
+# ==========================
+# Lectura de archivos full y estadística
+# ==========================
+
+def build_timeseries_and_stats(
+    fullfile,
+    dt_ps,
+    atom_ids,
+    kind,
+    header_start,
+    ts_outname,
+    avg_outname,
+    hist_prefix,
+    modes_outname,
+    nbins_hist=50,
+    spin_sign=1.0,
+    keep_mask=None
+):
+    """
+    Analiza un archivo full (mq_full.dat o ms_full.dat).
+
+    kind: 'charge' o 'spin'
+    header_start:
+        - "# Mulliken Population Analysis"  (cargas)
+        - "# Mulliken Spin Population Analysis" (spin)
+
+    Returns
+    -------
+    times : np.ndarray
+        Vector de tiempos (ps) para cada frame.
+    per_atom_values : dict
+        {atom_id: np.ndarray de valores válidos (sin NaN)}.
+    hist_data_for_plot : dict
+        {atom_id: dict con info de histograma y KDE para ploteo}.
+    """
+
+    atom_ids = list(atom_ids)
+    times, values, _frame_totals = parse_frame_data(
+        fullfile,
+        dt_ps,
+        atom_ids,
+        kind,
+        header_start,
+        spin_sign=spin_sign
+    )
+
+    if keep_mask is not None:
+        keep_mask = np.asarray(keep_mask, dtype=bool)
+        if keep_mask.size != times.size:
+            print("Error: la máscara de snapshots no coincide con la cantidad de frames.")
+            sys.exit(1)
+        times = times[keep_mask]
+        values = values[keep_mask, :]
+
+    data = np.column_stack((times, values)) if times.size > 0 else np.empty((0, len(atom_ids) + 1))
 
     # Serie temporal
     with open(ts_outname, "w") as out:
@@ -213,9 +322,13 @@ def build_timeseries_and_stats(
 
     print(f"[OK] Serie temporal de {kind} escrita en '{ts_outname}'.")
 
-    data = np.array(data, dtype=float)
-    times = data[:, 0]
-    values = data[:, 1:]  # shape: (n_frames, n_atoms)
+    if data.size == 0:
+        times = np.array([])
+        values = np.empty((0, len(atom_ids)))
+    else:
+        data = np.array(data, dtype=float)
+        times = data[:, 0]
+        values = data[:, 1:]  # shape: (n_frames, n_atoms)
 
     per_atom_values = {aid: [] for aid in atom_ids}
     for i, aid in enumerate(atom_ids):
@@ -417,13 +530,13 @@ def extract_orca_population_block(fname, header_line):
 
 def build_orca_full_files(orca_files, out_charge, out_spin, label, header_line):
     """
-    A partir de múltiples TD_*.out/.dat de ORCA arma:
+    A partir de múltiples archivos ORCA <prefijo>_N.out/.dat arma:
       - archivo de cargas
       - archivo de spines
     con el formato que espera build_timeseries_and_stats.
     """
     if not orca_files:
-        print("Error: no se encontraron archivos 'TD_*.out' o 'TD_*.dat' (ORCA).")
+        print("Error: no se encontraron archivos ORCA con formato '<prefijo>_N.out' o '<prefijo>_N.dat'.")
         sys.exit(1)
 
     with open(out_charge, "w") as q_out, open(out_spin, "w") as s_out:
@@ -556,18 +669,613 @@ def make_combined_hist_figure(
     print(f"[OK] Figura combinada cargas/spines guardada en '{fig_outname}'.")
 
 
+def make_timeseries_figure(times, per_atom_charge, per_atom_spin, atom_ids, atom_labels=None, fig_outname="qs_timeseries.png"):
+    """
+    Genera una figura con carga y spin en función del tiempo para los átomos elegidos.
+    """
+    has_charge = any(np.asarray(per_atom_charge.get(aid, []), dtype=float).size > 0 for aid in atom_ids)
+    has_spin = any(np.asarray(per_atom_spin.get(aid, []), dtype=float).size > 0 for aid in atom_ids)
+    if not has_charge and not has_spin:
+        print("[AVISO] No se generó figura temporal (no hay datos de carga ni spin).")
+        return
+
+    ncols = 1 + int(has_spin)
+    fig, axes = plt.subplots(1, ncols, squeeze=False, figsize=(5 * ncols, 4))
+    cmap = plt.get_cmap("tab10")
+
+    ax_q = axes[0, 0]
+    if has_charge:
+        for idx, aid in enumerate(atom_ids):
+            q_vals = np.asarray(per_atom_charge.get(aid, []), dtype=float)
+            if q_vals.size == 0:
+                continue
+            n = min(times.size, q_vals.size)
+            label = atom_labels.get(aid, str(aid)) if atom_labels is not None else str(aid)
+            ax_q.plot(times[:n], q_vals[:n], linewidth=1.6, color=cmap(idx % 10), label=f"Atom {label}")
+        ax_q.set_xlabel("Time (ps)")
+        ax_q.set_ylabel("Charge")
+        ax_q.legend(fontsize=8)
+    else:
+        ax_q.text(0.5, 0.5, "No q data", transform=ax_q.transAxes, ha="center", va="center")
+        ax_q.set_axis_off()
+
+    if has_spin:
+        ax_s = axes[0, 1]
+        for idx, aid in enumerate(atom_ids):
+            s_vals = np.asarray(per_atom_spin.get(aid, []), dtype=float)
+            if s_vals.size == 0:
+                continue
+            n = min(times.size, s_vals.size)
+            label = atom_labels.get(aid, str(aid)) if atom_labels is not None else str(aid)
+            ax_s.plot(times[:n], s_vals[:n], linewidth=1.6, color=cmap(idx % 10), label=f"Atom {label}")
+        ax_s.set_xlabel("Time (ps)")
+        ax_s.set_ylabel("Spin")
+        ax_s.legend(fontsize=8)
+
+    plt.tight_layout()
+    fig.savefig(fig_outname, dpi=300)
+    plt.close(fig)
+    print(f"[OK] Figura temporal cargas/spines guardada en '{fig_outname}'.")
+
+
+def load_atom_timeseries_file(fname):
+    """
+    Lee un archivo atom_<id>_..._timeseries.dat y retorna arrays de carga y spin.
+    Si no existe columna de spin, devuelve un array vacío para spin.
+    """
+    charges = []
+    spins = []
+
+    with open(fname, "r") as f:
+        for line in f:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            parts = stripped.split()
+            if len(parts) >= 2:
+                charges.append(float(parts[1]))
+            if len(parts) >= 3:
+                spins.append(float(parts[2]))
+
+    return np.asarray(charges, dtype=float), np.asarray(spins, dtype=float)
+
+
+def parse_atom_id_list(atom_ids_str):
+    """
+    Convierte una cadena con enteros separados por espacios en una lista de átomos.
+    """
+    try:
+        atom_ids = [int(x) for x in atom_ids_str.split()]
+    except ValueError:
+        print("Error: los números de átomo deben ser enteros separados por espacios.")
+        sys.exit(1)
+    return atom_ids
+
+
+def analyze_spin_consistency(times, spin_values, spin_totals, tolerance, report_outname):
+    """
+    Compara la suma de spines de los átomos seleccionados contra el spin total por frame.
+    """
+    if times.size == 0:
+        return np.array([], dtype=bool)
+
+    missing_selected = np.isnan(spin_values).any(axis=1)
+    selected_sum = np.nansum(spin_values, axis=1)
+    diff = selected_sum - spin_totals
+    keep_mask = (np.abs(diff) <= tolerance) & (~missing_selected)
+
+    with open(report_outname, "w") as out:
+        out.write("# snapshot time_ps selected_spin_sum total_spin diff missing_selected_atom usar_en_analisis\n")
+        for iframe, (t, sel, total, delta, missing, keep) in enumerate(
+            zip(times, selected_sum, spin_totals, diff, missing_selected, keep_mask)
+        ):
+            use_label = "Si" if keep else "No"
+            out.write(f"{iframe:d} {t:.7f} {sel:.7f} {total:.7f} {delta:.7f} {int(missing)} {use_label}\n")
+
+    n_bad = int((~keep_mask).sum())
+    if n_bad > 0:
+        print(
+            f"[WARN] En {n_bad} snapshots la suma de spin de los átomos elegidos difiere del spin total "
+            f"más de {tolerance:.4f}. Puede faltar analizar algún átomo o haber artifacts."
+        )
+    else:
+        print(f"[OK] La suma de spin de los átomos elegidos reproduce el spin total dentro de {tolerance:.4f}.")
+
+    print(f"[OK] Reporte de consistencia de spin guardado en '{report_outname}'.")
+    return keep_mask
+
+
+def suggest_missing_spin_atoms(
+    spin_full,
+    dt_ps,
+    selected_atom_ids,
+    bad_mask,
+    header_start,
+    spin_sign,
+    report_outname="spin_missing_atom_suggestions.dat",
+    top_n=12
+):
+    """
+    Sugiere átomos no seleccionados que ayudan a reconciliar la suma de spin.
+    """
+    if bad_mask.size == 0 or not bad_mask.any():
+        return []
+
+    atom_info = get_atom_list_from_full(spin_full, header_start)
+    all_atom_ids = [aid for aid, _atype in atom_info]
+    atom_types = {aid: atype for aid, atype in atom_info}
+    omitted_atom_ids = [aid for aid in all_atom_ids if aid not in set(selected_atom_ids)]
+    if not omitted_atom_ids:
+        return []
+
+    times_all, all_spin_values, spin_totals = parse_frame_data(
+        spin_full,
+        dt_ps,
+        all_atom_ids,
+        kind="spin",
+        header_start=header_start,
+        spin_sign=spin_sign
+    )
+    if times_all.size == 0 or times_all.size != bad_mask.size:
+        return []
+
+    bad_values = all_spin_values[bad_mask, :]
+    bad_totals = spin_totals[bad_mask]
+    selected_idx = [all_atom_ids.index(aid) for aid in selected_atom_ids if aid in all_atom_ids]
+    omitted_idx = [all_atom_ids.index(aid) for aid in omitted_atom_ids]
+
+    selected_sum = np.nansum(bad_values[:, selected_idx], axis=1)
+    missing_target = bad_totals - selected_sum
+    mean_missing_target = float(np.nanmean(missing_target))
+
+    suggestions = []
+    for idx in omitted_idx:
+        aid = all_atom_ids[idx]
+        vals = bad_values[:, idx]
+        valid = ~np.isnan(vals)
+        if not valid.any():
+            continue
+        vals_valid = vals[valid]
+        target_valid = missing_target[valid]
+        if vals_valid.size == 0:
+            continue
+        mean_spin = float(np.mean(vals_valid))
+        mean_abs_spin = float(np.mean(np.abs(vals_valid)))
+        alignment = float(np.mean(vals_valid * target_valid))
+        sign_match = 1.0 if mean_missing_target == 0.0 else np.sign(mean_spin) == np.sign(mean_missing_target)
+        suggestions.append({
+            "atom_id": aid,
+            "atom_type": atom_types.get(aid, "?"),
+            "mean_spin": mean_spin,
+            "mean_abs_spin": mean_abs_spin,
+            "alignment": alignment,
+            "sign_match": bool(sign_match),
+        })
+
+    suggestions.sort(
+        key=lambda item: (
+            int(item["sign_match"]),
+            item["alignment"],
+            item["mean_abs_spin"]
+        ),
+        reverse=True
+    )
+
+    chosen = []
+    cumulative = 0.0
+    if mean_missing_target != 0.0:
+        for item in suggestions:
+            if np.sign(item["mean_spin"]) != np.sign(mean_missing_target):
+                continue
+            chosen.append(item)
+            cumulative += item["mean_spin"]
+            if abs(cumulative) >= abs(mean_missing_target):
+                break
+
+    with open(report_outname, "w") as out:
+        out.write("# atom_id atom_type mean_spin_bad_snapshots mean_abs_spin_bad_snapshots alignment_with_missing_target sign_match\n")
+        for item in suggestions[:top_n]:
+            sign_match_label = "Si" if item["sign_match"] else "No"
+            out.write(
+                f"{item['atom_id']:d} {item['atom_type']} {item['mean_spin']:.7f} "
+                f"{item['mean_abs_spin']:.7f} {item['alignment']:.7f} {sign_match_label}\n"
+            )
+
+    if suggestions:
+        print("[INFO] Átomos candidatos para completar el spin faltante:")
+        for item in suggestions[:min(5, len(suggestions))]:
+            print(
+                f"  átomo {item['atom_id']} ({item['atom_type']}): "
+                f"spin medio={item['mean_spin']:.4f}, |spin| medio={item['mean_abs_spin']:.4f}"
+            )
+        if chosen:
+            chosen_str = ", ".join(f"{item['atom_id']}({item['atom_type']})" for item in chosen)
+            print(f"[INFO] Sugerencia automática de átomos a agregar: {chosen_str}")
+    print(f"[OK] Sugerencias de átomos faltantes guardadas en '{report_outname}'.")
+
+    return suggestions
+
+
+def discover_global_analysis_dirs(base_dir):
+    """
+    Busca subdirectorios inmediatos con resultados de análisis previos.
+    """
+    subdirs = []
+    for entry in sorted(os.listdir(base_dir)):
+        fullpath = os.path.join(base_dir, entry)
+        if not os.path.isdir(fullpath):
+            continue
+        if any(
+            os.path.exists(os.path.join(fullpath, marker))
+            for marker in ("qs_histograms.png", "mulliken_histograms.png", "loewdin_histograms.png")
+        ):
+            subdirs.append(fullpath)
+    return subdirs
+
+
+def collect_global_hist_data(base_dir, atom_map, analysis_kind):
+    """
+    Recolecta series temporales ya analizadas desde subcarpetas.
+
+    analysis_kind:
+      - "mulliken" -> atom_<id>_qs_timeseries.dat
+      - "loewdin"  -> atom_<id>_loewdin_timeseries.dat
+    """
+    suffix = "qs" if analysis_kind == "mulliken" else "loewdin"
+    systems_data = {}
+    missing = []
+
+    for system_dir in discover_global_analysis_dirs(base_dir):
+        system_name = os.path.basename(system_dir)
+        per_atom = {}
+        found_any = False
+
+        for aid in atom_map.get(system_name, []):
+            fname = os.path.join(system_dir, f"atom_{aid}_{suffix}_timeseries.dat")
+            if not os.path.exists(fname):
+                missing.append((system_name, aid, fname))
+                continue
+
+            charges, spins = load_atom_timeseries_file(fname)
+            if charges.size == 0 and spins.size == 0:
+                missing.append((system_name, aid, fname))
+                continue
+
+            per_atom[aid] = {"charge": charges, "spin": spins}
+            found_any = True
+
+        if found_any:
+            systems_data[system_name] = per_atom
+
+    return systems_data, missing
+
+
+def get_central_range(data_chunks, percentile=95.0):
+    """
+    Calcula un rango robusto que contiene el porcentaje central indicado.
+    """
+    if not data_chunks:
+        return None
+
+    vals = np.concatenate(data_chunks)
+    vals = vals[~np.isnan(vals)]
+    if vals.size == 0:
+        return None
+
+    tail = 0.5 * (100.0 - percentile)
+    xmin, xmax = np.percentile(vals, [tail, 100.0 - tail])
+    if xmin == xmax:
+        pad = max(abs(xmin) * 0.05, 1e-3)
+        xmin -= pad
+        xmax += pad
+    else:
+        pad = 0.05 * (xmax - xmin)
+        xmin -= pad
+        xmax += pad
+    return xmin, xmax
+
+
+def export_global_plot_data(output_dir, atom_ids, systems_data, analysis_kind, percentile=95.0):
+    """
+    Exporta los valores realmente usados para construir los histogramas globales.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    values_out = os.path.join(output_dir, f"{analysis_kind}_global_plot_values.dat")
+    ranges_out = os.path.join(output_dir, f"{analysis_kind}_global_plot_ranges.dat")
+
+    with open(values_out, "w") as f_values, open(ranges_out, "w") as f_ranges:
+        f_values.write("# system atom property value\n")
+        f_ranges.write("# atom property x_min x_max n_total n_used percentile_central\n")
+
+        for aid in atom_ids:
+            charge_pool = []
+            spin_pool = []
+            for system_name in systems_data:
+                atom_data = systems_data[system_name].get(aid)
+                if not atom_data:
+                    continue
+                if atom_data["charge"].size > 0:
+                    charge_pool.append(atom_data["charge"])
+                if atom_data["spin"].size > 0:
+                    spin_pool.append(atom_data["spin"])
+
+            charge_xlim = get_central_range(charge_pool, percentile=percentile)
+            spin_xlim = get_central_range(spin_pool, percentile=percentile)
+
+            for prop, xlim in (("charge", charge_xlim), ("spin", spin_xlim)):
+                n_total = 0
+                n_used = 0
+                for system_name in systems_data:
+                    atom_data = systems_data[system_name].get(aid)
+                    if not atom_data:
+                        continue
+                    vals = atom_data[prop]
+                    if vals.size == 0:
+                        continue
+                    vals = vals[~np.isnan(vals)]
+                    n_total += vals.size
+                    vals_plot = vals
+                    if xlim is not None:
+                        vals_plot = vals[(vals >= xlim[0]) & (vals <= xlim[1])]
+                    n_used += vals_plot.size
+                    for val in vals_plot:
+                        f_values.write(f"{system_name} {aid:d} {prop} {val:.7f}\n")
+
+                if xlim is not None:
+                    f_ranges.write(
+                        f"{aid:d} {prop} {xlim[0]:.7f} {xlim[1]:.7f} {n_total:d} {n_used:d} {percentile:.1f}\n"
+                    )
+                else:
+                    f_ranges.write(
+                        f"{aid:d} {prop} nan nan {n_total:d} {n_used:d} {percentile:.1f}\n"
+                    )
+
+    print(f"[OK] Datos globales usados en los histogramas guardados en '{values_out}'.")
+    print(f"[OK] Rangos globales de ploteo guardados en '{ranges_out}'.")
+
+
+def make_global_overlay_hist_figure(
+    atom_ids,
+    systems_data,
+    atom_labels=None,
+    analysis_label="Loewdin",
+    fig_outname="global_histograms.png",
+    bins=50,
+    percentile=95.0
+):
+    """
+    Genera histogramas superpuestos de carga y spin para múltiples sistemas.
+    Cada fila corresponde a un átomo y cada color a un sistema distinto.
+    """
+    if not systems_data:
+        print("[AVISO] No se generó figura global: no se encontraron datos para comparar.")
+        return
+
+    system_names = list(systems_data.keys())
+    cmap = plt.get_cmap("tab10")
+
+    fig, axes = plt.subplots(len(atom_ids), 2, squeeze=False, figsize=(10, 3 * len(atom_ids)))
+
+    for row, aid in enumerate(atom_ids):
+        label = atom_labels.get(aid, str(aid)) if atom_labels is not None else str(aid)
+        ax_q = axes[row, 0]
+        ax_s = axes[row, 1]
+        has_q = False
+        has_s = False
+
+        charge_pool = []
+        spin_pool = []
+        for system_name in system_names:
+            atom_data = systems_data[system_name].get(aid)
+            if not atom_data:
+                continue
+            if atom_data["charge"].size > 0:
+                charge_pool.append(atom_data["charge"])
+            if atom_data["spin"].size > 0:
+                spin_pool.append(atom_data["spin"])
+
+        charge_xlim = get_central_range(charge_pool, percentile=percentile)
+        spin_xlim = get_central_range(spin_pool, percentile=percentile)
+
+        for idx, system_name in enumerate(system_names):
+            atom_data = systems_data[system_name].get(aid)
+            if not atom_data:
+                continue
+
+            color = cmap(idx % 10)
+            charges = atom_data["charge"]
+            spins = atom_data["spin"]
+
+            if charges.size > 0:
+                charges_plot = charges
+                if charge_xlim is not None:
+                    charges_plot = charges[(charges >= charge_xlim[0]) & (charges <= charge_xlim[1])]
+                if charges_plot.size > 0:
+                    ax_q.hist(
+                        charges_plot,
+                        bins=bins,
+                        range=charge_xlim,
+                        density=True,
+                        alpha=0.30,
+                        color=color,
+                        edgecolor=color,
+                        linewidth=0.6,
+                        label=system_name
+                    )
+                    if charges_plot.size > 1 and np.unique(charges_plot).size > 1:
+                        xs = np.linspace(charge_xlim[0], charge_xlim[1], 200) if charge_xlim is not None else np.linspace(charges_plot.min(), charges_plot.max(), 200)
+                        dens = gaussian_kde(charges_plot)(xs)
+                        ax_q.plot(xs, dens, color=color, linewidth=1.8)
+                    has_q = True
+
+            if spins.size > 0:
+                spins_plot = spins
+                if spin_xlim is not None:
+                    spins_plot = spins[(spins >= spin_xlim[0]) & (spins <= spin_xlim[1])]
+                if spins_plot.size > 0:
+                    ax_s.hist(
+                        spins_plot,
+                        bins=bins,
+                        range=spin_xlim,
+                        density=True,
+                        alpha=0.30,
+                        color=color,
+                        edgecolor=color,
+                        linewidth=0.6,
+                        label=system_name
+                    )
+                    if spins_plot.size > 1 and np.unique(spins_plot).size > 1:
+                        xs = np.linspace(spin_xlim[0], spin_xlim[1], 200) if spin_xlim is not None else np.linspace(spins_plot.min(), spins_plot.max(), 200)
+                        dens = gaussian_kde(spins_plot)(xs)
+                        ax_s.plot(xs, dens, color=color, linewidth=1.8)
+                    has_s = True
+
+        if has_q:
+            if charge_xlim is not None:
+                ax_q.set_xlim(charge_xlim)
+            ax_q.set_ylabel(f"Atom {label}")
+            ax_q.set_xlabel(f"{analysis_label} charge")
+            ax_q.legend(fontsize=8)
+        else:
+            ax_q.text(0.5, 0.5, "No q data", transform=ax_q.transAxes, ha="center", va="center")
+            ax_q.set_axis_off()
+
+        if has_s:
+            if spin_xlim is not None:
+                ax_s.set_xlim(spin_xlim)
+            ax_s.set_xlabel(f"{analysis_label} spin")
+            ax_s.legend(fontsize=8)
+        else:
+            ax_s.text(0.5, 0.5, "No s data", transform=ax_s.transAxes, ha="center", va="center")
+            ax_s.set_axis_off()
+
+    plt.tight_layout()
+    fig.savefig(fig_outname, dpi=300)
+    plt.close(fig)
+    print(f"[OK] Figura global comparativa guardada en '{fig_outname}'.")
+
+
 # ==========================
 # MAIN
 # ==========================
 
 def main():
+    mode = prompt_numbered_choice(
+        "Modo de trabajo:",
+        [("Análisis individual", "i"), ("Análisis global de subcarpetas", "g")],
+        default_idx=0
+    )
+
+    if mode in ("g",):
+        analysis_kind = prompt_numbered_choice(
+            "Análisis a comparar en el modo global:",
+            [("Loewdin", "loewdin"), ("Mulliken", "mulliken")],
+            default_idx=0
+        )
+
+        base_dir = os.getcwd()
+        system_dirs = discover_global_analysis_dirs(base_dir)
+        if not system_dirs:
+            print("Error: no se encontraron subcarpetas con análisis previos en el directorio actual.")
+            sys.exit(1)
+
+        system_names = [os.path.basename(system_dir) for system_dir in system_dirs]
+        print("Sistemas detectados para el análisis global:")
+        for system_name in system_names:
+            print("  ", system_name)
+
+        atom_selection_mode = prompt_numbered_choice(
+            "Selección de átomos para el modo global:",
+            [("Mismos átomos para todos los sistemas", "mismos"),
+             ("Átomos específicos para cada sistema", "especificos")],
+            default_idx=0
+        )
+
+        atom_map = {}
+        if atom_selection_mode == "mismos":
+            atom_ids_str = input(
+                "Ingrese los números de átomo a comparar, separados por espacios (por ejemplo: 88 89 90): "
+            ).strip()
+            atom_ids = parse_atom_id_list(atom_ids_str)
+            if not atom_ids:
+                print("No se ingresó ningún átomo para comparar.")
+                sys.exit(1)
+            for system_name in system_names:
+                atom_map[system_name] = list(atom_ids)
+        else:
+            for system_name in system_names:
+                atom_ids_str = input(
+                    f"Ingrese los átomos a comparar para {system_name}, separados por espacios (Enter = omitir sistema): "
+                ).strip()
+                if atom_ids_str == "":
+                    atom_map[system_name] = []
+                    continue
+                atom_ids = parse_atom_id_list(atom_ids_str)
+                atom_map[system_name] = atom_ids
+
+        atom_ids = sorted({aid for aids in atom_map.values() for aid in aids})
+        if not atom_ids:
+            print("No se ingresó ningún átomo para comparar.")
+            sys.exit(1)
+
+        atom_labels = {aid: str(aid) for aid in atom_ids}
+        use_labels = prompt_numbered_choice(
+            "¿Desea asignar nombres personalizados a los átomos?",
+            [("No", False), ("Sí", True)],
+            default_idx=0
+        )
+        if use_labels:
+            print("Ingrese un nombre para cada átomo; deje vacío para usar el número por defecto.")
+            for aid in atom_ids:
+                label = input(f"Nombre para el átomo {aid} (dejar vacío para usar '{aid}'): ").strip()
+                if label:
+                    atom_labels[aid] = label
+
+        systems_data, missing = collect_global_hist_data(base_dir, atom_map, analysis_kind)
+        if not systems_data:
+            print("Error: no se encontraron análisis previos compatibles en las subcarpetas del directorio actual.")
+            sys.exit(1)
+
+        print("Sistemas incluidos en el gráfico:")
+        for system_name in systems_data:
+            atoms_for_system = " ".join(str(aid) for aid in sorted(systems_data[system_name].keys()))
+            print(f"  {system_name}: {atoms_for_system}")
+
+        if missing:
+            print("[WARN] Faltan algunos archivos de series temporales y se omitieron del gráfico:")
+            for system_name, aid, fname in missing[:20]:
+                print(f"  {system_name}: átomo {aid} -> {os.path.basename(fname)}")
+            if len(missing) > 20:
+                print(f"  ... y {len(missing) - 20} casos más.")
+
+        global_dir = os.path.join(base_dir, "global")
+        os.makedirs(global_dir, exist_ok=True)
+
+        export_global_plot_data(
+            global_dir,
+            atom_ids,
+            systems_data,
+            analysis_kind,
+            percentile=95.0
+        )
+
+        fig_outname = os.path.join(global_dir, f"global_{analysis_kind}_histograms.png")
+        make_global_overlay_hist_figure(
+            atom_ids,
+            systems_data,
+            atom_labels=atom_labels,
+            analysis_label=analysis_kind.capitalize(),
+            fig_outname=fig_outname,
+            percentile=95.0
+        )
+        return
+
     # Elegir programa
-    prog = input("Ingrese el programa con el cual se trabajará (LIO/ORCA): ").strip().lower()
-    if prog not in ("lio", "orca", ""):
-        print("Error: programa no reconocido. Use 'LIO' u 'ORCA'.")
-        sys.exit(1)
-    if prog == "":
-        prog = "lio"
+    prog = prompt_numbered_choice(
+        "Programa con el cual se trabajará:",
+        [("LIO", "lio"), ("ORCA", "orca")],
+        default_idx=0
+    )
 
     have_spin = False
     spin_sign = 1.0
@@ -600,13 +1308,23 @@ def main():
         spin_full = "ms_full.dat"
         spin_sign = -1.0
     else:
-        # ORCA: cada TD_*.out/.dat es un frame
-        orca_files = get_sorted_orca_files("TD")
+        # ORCA: cada <prefijo>_N.out/.dat es un frame
+        orca_prefix = input(
+            "Ingrese el prefijo de los archivos ORCA antes de _N (por ejemplo, TD o SP; Enter = autodetectar): "
+        ).strip()
+
+        orca_files = get_sorted_orca_files(orca_prefix)
         if not orca_files:
-            print("Error: no se encontraron archivos 'TD_*.out' o 'TD_*.dat'.")
+            if orca_prefix:
+                print(f"Error: no se encontraron archivos '{orca_prefix}_*.out' o '{orca_prefix}_*.dat'.")
+            else:
+                print("Error: no se encontraron archivos ORCA con formato '<prefijo>_N.out' o '<prefijo>_N.dat'.")
             sys.exit(1)
 
-        print("Archivos ORCA (TD_*.out/.dat) que se van a analizar:")
+        if orca_prefix:
+            print(f"Archivos ORCA ({orca_prefix}_*.out/.dat) que se van a analizar:")
+        else:
+            print("Archivos ORCA autodetectados (*_N.out/.dat) que se van a analizar:")
         for f in orca_files:
             print("  ", f)
 
@@ -658,13 +1376,90 @@ def main():
 
     # Nombres personalizados para los átomos (opcional)
     atom_labels = {aid: str(aid) for aid in atom_ids}
-    use_labels = input("¿Desea asignar nombres personalizados a los átomos? (s/n): ").strip().lower()
-    if use_labels in ("s", "si", "sí", "y", "yes"):
+    use_labels = prompt_numbered_choice(
+        "¿Desea asignar nombres personalizados a los átomos?",
+        [("No", False), ("Sí", True)],
+        default_idx=0
+    )
+    if use_labels:
         print("Ingrese un nombre para cada átomo; deje vacío para usar el número por defecto.")
         for aid in atom_ids:
             label = input(f"Nombre para el átomo {aid} (por ejemplo, 'Fe'; dejar vacío para usar '{aid}'): ").strip()
             if label:
                 atom_labels[aid] = label
+
+    make_time_plots = prompt_numbered_choice(
+        "¿Desea generar gráficos de carga/spin en función del tiempo?",
+        [("No", False), ("Sí", True)],
+        default_idx=0
+    )
+
+    spin_keep_mask = None
+    if have_spin:
+        run_spin_check = prompt_numbered_choice(
+            "Chequeo de consistencia de spin por snapshot:",
+            [("No realizar chequeo", False),
+             ("Comparar la suma de los átomos elegidos con el spin total del sistema", True)],
+            default_idx=1
+        )
+        if run_spin_check:
+            tol_str = input(
+                "Ingrese la tolerancia permitida para |suma_spines_seleccionados - spin_total| (Enter = 0.20): "
+            ).strip()
+            if tol_str == "":
+                spin_tolerance = 0.20
+            else:
+                try:
+                    spin_tolerance = float(tol_str)
+                except ValueError:
+                    print("Error: la tolerancia debe ser un número.")
+                    sys.exit(1)
+
+            spin_times_check, spin_values_check, spin_totals_check = parse_frame_data(
+                spin_full,
+                dt_ps,
+                atom_ids,
+                kind="spin",
+                header_start="# Mulliken Spin Population Analysis",
+                spin_sign=spin_sign
+            )
+            spin_keep_mask = analyze_spin_consistency(
+                spin_times_check,
+                spin_values_check,
+                spin_totals_check,
+                tolerance=spin_tolerance,
+                report_outname="spin_consistency_report.dat"
+            )
+
+            if (~spin_keep_mask).any():
+                suggest_missing_spin_atoms(
+                    spin_full,
+                    dt_ps,
+                    atom_ids,
+                    bad_mask=(~spin_keep_mask),
+                    header_start="# Mulliken Spin Population Analysis",
+                    spin_sign=spin_sign,
+                    report_outname="spin_missing_atom_suggestions.dat"
+                )
+                filter_bad = prompt_numbered_choice(
+                    "Snapshots con mala consistencia de spin detectados:",
+                    [("Mantener todos los snapshots", False),
+                     ("Eliminar del análisis los snapshots fuera de tolerancia", True)],
+                    default_idx=0
+                )
+                if not filter_bad:
+                    spin_keep_mask = None
+                elif spin_keep_mask.sum() == 0:
+                    print("Error: todos los snapshots quedaron fuera de tolerancia.")
+                    sys.exit(1)
+                else:
+                    n_kept = int(spin_keep_mask.sum())
+                    n_removed = int((~spin_keep_mask).sum())
+                    print(
+                        f"[INFO] Filtrado por consistencia de spin aplicado: "
+                        f"{n_removed} snapshots eliminados, {n_kept} snapshots conservados."
+                    )
+                   
 
     if orca_mode:
         q_ts_out = "mulliken_charge_timeseries.dat"
@@ -698,7 +1493,8 @@ def main():
         avg_outname=q_avg_out,
         hist_prefix=q_hist_prefix,
         modes_outname=q_modes_out,
-        nbins_hist=50
+        nbins_hist=50,
+        keep_mask=spin_keep_mask
     )
 
     # --- Análisis de spin, si existe ---
@@ -716,7 +1512,8 @@ def main():
             hist_prefix=s_hist_prefix,
             modes_outname=s_modes_out,
             nbins_hist=50,
-            spin_sign=spin_sign
+            spin_sign=spin_sign,
+            keep_mask=spin_keep_mask
         )
         # Se asume mismo dt y cantidad de frames; si hiciera falta se puede matchear más fino
     else:
@@ -764,6 +1561,17 @@ def main():
         fig_outname=mulliken_fig_out
     )
 
+    if make_time_plots:
+        mulliken_ts_fig_out = "mulliken_timeseries.png" if orca_mode else "qs_timeseries.png"
+        make_timeseries_figure(
+            times,
+            per_atom_q,
+            per_atom_s if have_spin else {},
+            atom_ids,
+            atom_labels=atom_labels,
+            fig_outname=mulliken_ts_fig_out
+        )
+
     # Mantener compatibilidad con nombre histórico cuando se trabaja con ORCA
     if orca_mode and mulliken_fig_out != "qs_histograms.png":
         make_combined_hist_figure(
@@ -773,6 +1581,15 @@ def main():
             atom_labels=atom_labels,
             fig_outname="qs_histograms.png"
         )
+        if make_time_plots and mulliken_ts_fig_out != "qs_timeseries.png":
+            make_timeseries_figure(
+                times,
+                per_atom_q,
+                per_atom_s if have_spin else {},
+                atom_ids,
+                atom_labels=atom_labels,
+                fig_outname="qs_timeseries.png"
+            )
 
     # --- ORCA: análisis Loewdin adicional ---
     if orca_mode:
@@ -786,7 +1603,8 @@ def main():
             avg_outname="loewdin_charge_averages.dat",
             hist_prefix="loewdin_charge_hist",
             modes_outname="loewdin_charge_modes.dat",
-            nbins_hist=50
+            nbins_hist=50,
+            keep_mask=spin_keep_mask
         )
 
         hist_s_l = {}
@@ -802,7 +1620,8 @@ def main():
             hist_prefix="loewdin_spin_hist",
             modes_outname="loewdin_spin_modes.dat",
             nbins_hist=50,
-            spin_sign=spin_sign
+            spin_sign=spin_sign,
+            keep_mask=spin_keep_mask
         )
 
         for aid in atom_ids:
@@ -842,6 +1661,16 @@ def main():
             atom_labels=atom_labels,
             fig_outname="loewdin_histograms.png"
         )
+
+        if make_time_plots:
+            make_timeseries_figure(
+                times_l,
+                per_atom_q_l,
+                per_atom_s_l,
+                atom_ids,
+                atom_labels=atom_labels,
+                fig_outname="loewdin_timeseries.png"
+            )
 
 
 if __name__ == "__main__":
