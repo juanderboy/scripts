@@ -180,6 +180,40 @@ def analyze_modes_kde(vals, n_grid=200, prominence_factor=0.05):
     return xs, dens, peak_positions, peak_heights
 
 
+def get_histogram_edges(vals, bins_spec=50, value_range=None, min_bins=8, max_bins=80):
+    """
+    Determina bordes de histograma a partir de una especificación fija o automática.
+
+    bins_spec puede ser:
+      - int: número fijo de bins
+      - 'fd': regla de Freedman-Diaconis
+      - 'sturges': regla de Sturges
+      - 'auto': equivalente a numpy ('max' entre sturges y fd)
+    """
+    vals = np.asarray(vals, dtype=float)
+    vals = vals[~np.isnan(vals)]
+    if vals.size == 0:
+        return np.array([])
+
+    if value_range is None:
+        vmin = float(vals.min())
+        vmax = float(vals.max())
+    else:
+        vmin, vmax = map(float, value_range)
+
+    if vmin == vmax:
+        return np.array([vmin, vmax])
+
+    if isinstance(bins_spec, int):
+        nbins = max(1, bins_spec)
+        return np.linspace(vmin, vmax, nbins + 1)
+
+    edges = np.histogram_bin_edges(vals, bins=bins_spec, range=(vmin, vmax))
+    nbins = max(1, len(edges) - 1)
+    nbins = min(max(nbins, min_bins), max_bins)
+    return np.linspace(vmin, vmax, nbins + 1)
+
+
 def parse_frame_data(fullfile, dt_ps, atom_ids, kind, header_start, spin_sign=1.0):
     """
     Parsea un archivo full y retorna datos por frame.
@@ -251,6 +285,34 @@ def parse_frame_data(fullfile, dt_ps, atom_ids, kind, header_start, spin_sign=1.
     return data[:, 0], data[:, 1:], np.asarray(frame_totals, dtype=float)
 
 
+def normalize_selected_spin_values(values, zero_tol=1e-12):
+    """
+    Normaliza los spines por frame usando la suma de los átomos seleccionados.
+
+    Para cada snapshot:
+      spin_frac_i = spin_i / sum_j(spin_j)
+
+    Si falta algún átomo seleccionado o la suma es ~0, ese frame se marca como NaN.
+    """
+    values = np.asarray(values, dtype=float)
+    if values.size == 0:
+        return values.copy()
+
+    normalized = values.copy()
+    missing_mask = np.isnan(values).any(axis=1)
+    selected_totals = np.nansum(values, axis=1)
+    invalid_total_mask = np.abs(selected_totals) <= zero_tol
+    invalid_mask = missing_mask | invalid_total_mask
+
+    valid_mask = ~invalid_mask
+    if np.any(valid_mask):
+        normalized[valid_mask, :] = values[valid_mask, :] / selected_totals[valid_mask, np.newaxis]
+    if np.any(invalid_mask):
+        normalized[invalid_mask, :] = np.nan
+
+    return normalized
+
+
 # ==========================
 # Lectura de archivos full y estadística
 # ==========================
@@ -267,7 +329,8 @@ def build_timeseries_and_stats(
     modes_outname,
     nbins_hist=50,
     spin_sign=1.0,
-    keep_mask=None
+    keep_mask=None,
+    normalize_spin_fraction=False
 ):
     """
     Analiza un archivo full (mq_full.dat o ms_full.dat).
@@ -297,19 +360,28 @@ def build_timeseries_and_stats(
         spin_sign=spin_sign
     )
 
+    if kind == "spin" and normalize_spin_fraction:
+        values = normalize_selected_spin_values(values)
+
     if keep_mask is not None:
         keep_mask = np.asarray(keep_mask, dtype=bool)
         if keep_mask.size != times.size:
-            print("Error: la máscara de snapshots no coincide con la cantidad de frames.")
-            sys.exit(1)
-        times = times[keep_mask]
-        values = values[keep_mask, :]
+            print(
+                f"[WARN] Se ignoró una máscara de snapshots incompatible en '{fullfile}': "
+                f"máscara={keep_mask.size}, frames={times.size}."
+            )
+        else:
+            times = times[keep_mask]
+            values = values[keep_mask, :]
 
     data = np.column_stack((times, values)) if times.size > 0 else np.empty((0, len(atom_ids) + 1))
 
     # Serie temporal
     with open(ts_outname, "w") as out:
-        header = ["time_ps"] + [f"{kind}_atom_{aid}" for aid in atom_ids]
+        if kind == "spin" and normalize_spin_fraction:
+            header = ["time_ps"] + [f"spin_fraction_atom_{aid}" for aid in atom_ids]
+        else:
+            header = ["time_ps"] + [f"{kind}_atom_{aid}" for aid in atom_ids]
         out.write("# " + " ".join(header) + "\n")
         for row in data:
             formatted = []
@@ -338,7 +410,10 @@ def build_timeseries_and_stats(
 
     # Promedios
     with open(avg_outname, "w") as out:
-        out.write(f"# Promedios de {kind}\n")
+        if kind == "spin" and normalize_spin_fraction:
+            out.write("# Promedios de spin como fraccion del spin total de los atomos seleccionados\n")
+        else:
+            out.write(f"# Promedios de {kind}\n")
         out.write("# atom_id  avg_value\n")
         for i, aid in enumerate(atom_ids):
             vals = per_atom_values[aid]
@@ -384,11 +459,13 @@ def build_timeseries_and_stats(
                 "counts_norm": np.array([1.0]),
                 "xs": xs,
                 "dens": dens,
-                "peaks": peaks
+                "peaks": peaks,
+                "axis_label": "Spin fraction" if kind == "spin" and normalize_spin_fraction else None
             }
             continue
 
-        counts, bin_edges = np.histogram(vals, bins=nbins_hist, range=(vmin, vmax))
+        bin_edges = get_histogram_edges(vals, bins_spec=nbins_hist, value_range=(vmin, vmax))
+        counts, bin_edges = np.histogram(vals, bins=bin_edges)
         bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
         counts_norm = counts / counts.sum()
 
@@ -422,7 +499,8 @@ def build_timeseries_and_stats(
             "counts_norm": counts_norm,
             "xs": xs,
             "dens": dens,
-            "peaks": peak_positions
+            "peaks": peak_positions,
+            "axis_label": "Spin fraction" if kind == "spin" and normalize_spin_fraction else None
         }
 
     # Resumen de modos
@@ -438,6 +516,25 @@ def build_timeseries_and_stats(
     print(f"[OK] Resumen de modos de {kind} escrito en '{modes_outname}'.")
 
     return times, per_atom_values, hist_data_for_plot
+
+
+def apply_keep_mask_or_warn(keep_mask, n_frames, analysis_label):
+    """
+    Valida una máscara de snapshots contra un análisis dado.
+
+    Si la cantidad de frames no coincide, retorna None y emite un aviso.
+    """
+    if keep_mask is None:
+        return None
+
+    keep_mask = np.asarray(keep_mask, dtype=bool)
+    if keep_mask.size != n_frames:
+        print(
+            f"[WARN] No se aplicó el filtrado de snapshots a {analysis_label}: "
+            f"la máscara tiene {keep_mask.size} frames y el análisis tiene {n_frames}."
+        )
+        return None
+    return keep_mask
 
 
 # ==========================
@@ -656,7 +753,8 @@ def make_combined_hist_figure(
                     ymax = counts_norm.max()
                     ax_s.text(mu, ymax*1.02, f"{mu:.2f}",
                               rotation=90, ha="center", va="bottom", fontsize=7)
-                ax_s.set_xlabel("Mulliken spin")
+                axis_label = info.get("axis_label") or "Mulliken spin"
+                ax_s.set_xlabel(axis_label)
                 ax_s.legend(fontsize=8)
             else:
                 ax_s.text(0.5, 0.5, "No s data", transform=ax_s.transAxes,
@@ -669,7 +767,15 @@ def make_combined_hist_figure(
     print(f"[OK] Figura combinada cargas/spines guardada en '{fig_outname}'.")
 
 
-def make_timeseries_figure(times, per_atom_charge, per_atom_spin, atom_ids, atom_labels=None, fig_outname="qs_timeseries.png"):
+def make_timeseries_figure(
+    times,
+    per_atom_charge,
+    per_atom_spin,
+    atom_ids,
+    atom_labels=None,
+    fig_outname="qs_timeseries.png",
+    spin_ylabel="Spin"
+):
     """
     Genera una figura con carga y spin en función del tiempo para los átomos elegidos.
     """
@@ -709,7 +815,7 @@ def make_timeseries_figure(times, per_atom_charge, per_atom_spin, atom_ids, atom
             label = atom_labels.get(aid, str(aid)) if atom_labels is not None else str(aid)
             ax_s.plot(times[:n], s_vals[:n], linewidth=1.6, color=cmap(idx % 10), label=f"Atom {label}")
         ax_s.set_xlabel("Time (ps)")
-        ax_s.set_ylabel("Spin")
+        ax_s.set_ylabel(spin_ylabel)
         ax_s.legend(fontsize=8)
 
     plt.tight_layout()
@@ -722,13 +828,27 @@ def load_atom_timeseries_file(fname):
     """
     Lee un archivo atom_<id>_..._timeseries.dat y retorna arrays de carga y spin.
     Si no existe columna de spin, devuelve un array vacío para spin.
+
+    Returns
+    -------
+    charges : np.ndarray
+    spins : np.ndarray
+    spin_label : str | None
+        Nombre de la tercera columna del archivo, por ejemplo 'spin' o
+        'spin_fraction'. Si no hay tercera columna, retorna None.
     """
     charges = []
     spins = []
+    spin_label = None
 
     with open(fname, "r") as f:
         for line in f:
             stripped = line.strip()
+            if stripped.startswith("#"):
+                header_parts = stripped[1:].split()
+                if len(header_parts) >= 3:
+                    spin_label = header_parts[2]
+                continue
             if not stripped or stripped.startswith("#"):
                 continue
             parts = stripped.split()
@@ -737,7 +857,7 @@ def load_atom_timeseries_file(fname):
             if len(parts) >= 3:
                 spins.append(float(parts[2]))
 
-    return np.asarray(charges, dtype=float), np.asarray(spins, dtype=float)
+    return np.asarray(charges, dtype=float), np.asarray(spins, dtype=float), spin_label
 
 
 def parse_atom_id_list(atom_ids_str):
@@ -750,6 +870,71 @@ def parse_atom_id_list(atom_ids_str):
         print("Error: los números de átomo deben ser enteros separados por espacios.")
         sys.exit(1)
     return atom_ids
+
+
+def get_spin_representation_config(choice):
+    """
+    Retorna configuración asociada a la representación de spin elegida.
+    """
+    if choice == "fraction":
+        return {
+            "normalize": True,
+            "column_label": "spin_fraction",
+            "axis_label": "Spin fraction",
+            "global_axis_label": "Spin fraction"
+        }
+    return {
+        "normalize": False,
+        "column_label": "spin",
+        "axis_label": "Spin",
+        "global_axis_label": None
+    }
+
+
+def get_population_analysis_config(choice):
+    """
+    Retorna qué análisis de población deben procesarse.
+    """
+    if choice == "mulliken":
+        return {"mulliken": True, "loewdin": False}
+    if choice == "loewdin":
+        return {"mulliken": False, "loewdin": True}
+    return {"mulliken": True, "loewdin": True}
+
+
+def get_histogram_binning_config(choice):
+    """
+    Retorna la especificación de bins para histogramas.
+    """
+    if choice == "fixed_custom":
+        return "fixed_custom"
+    if choice == "sturges":
+        return "sturges"
+    if choice == "auto":
+        return "auto"
+    return "fd"
+
+
+def resolve_histogram_bins_spec(choice):
+    """
+    Resuelve la especificación final de bins, incluyendo la variante fija elegida por el usuario.
+    """
+    bins_spec = get_histogram_binning_config(choice)
+    if bins_spec != "fixed_custom":
+        return bins_spec
+
+    bins_str = input("Ingrese la cantidad fija de bins a usar (Enter = 50): ").strip()
+    if bins_str == "":
+        return 50
+    if not bins_str.isdigit():
+        print("Error: la cantidad de bins debe ser un entero positivo.")
+        sys.exit(1)
+
+    bins_value = int(bins_str)
+    if bins_value <= 0:
+        print("Error: la cantidad de bins debe ser mayor que cero.")
+        sys.exit(1)
+    return bins_value
 
 
 def analyze_spin_consistency(times, spin_values, spin_totals, tolerance, report_outname):
@@ -924,6 +1109,7 @@ def collect_global_hist_data(base_dir, atom_map, analysis_kind):
     suffix = "qs" if analysis_kind == "mulliken" else "loewdin"
     systems_data = {}
     missing = []
+    spin_labels_found = {}
 
     for system_dir in discover_global_analysis_dirs(base_dir):
         system_name = os.path.basename(system_dir)
@@ -936,18 +1122,20 @@ def collect_global_hist_data(base_dir, atom_map, analysis_kind):
                 missing.append((system_name, aid, fname))
                 continue
 
-            charges, spins = load_atom_timeseries_file(fname)
+            charges, spins, spin_label = load_atom_timeseries_file(fname)
             if charges.size == 0 and spins.size == 0:
                 missing.append((system_name, aid, fname))
                 continue
 
             per_atom[aid] = {"charge": charges, "spin": spins}
+            if spins.size > 0 and spin_label is not None:
+                spin_labels_found.setdefault(system_name, set()).add(spin_label)
             found_any = True
 
         if found_any:
             systems_data[system_name] = per_atom
 
-    return systems_data, missing
+    return systems_data, missing, spin_labels_found
 
 
 def get_central_range(data_chunks, percentile=95.0):
@@ -1039,8 +1227,9 @@ def make_global_overlay_hist_figure(
     systems_data,
     atom_labels=None,
     analysis_label="Loewdin",
+    spin_axis_label=None,
     fig_outname="global_histograms.png",
-    bins=50,
+    bins_spec=50,
     percentile=95.0
 ):
     """
@@ -1076,6 +1265,10 @@ def make_global_overlay_hist_figure(
 
         charge_xlim = get_central_range(charge_pool, percentile=percentile)
         spin_xlim = get_central_range(spin_pool, percentile=percentile)
+        charge_vals_all = np.concatenate(charge_pool) if charge_pool else np.array([])
+        spin_vals_all = np.concatenate(spin_pool) if spin_pool else np.array([])
+        charge_edges = get_histogram_edges(charge_vals_all, bins_spec=bins_spec, value_range=charge_xlim) if charge_pool else np.array([])
+        spin_edges = get_histogram_edges(spin_vals_all, bins_spec=bins_spec, value_range=spin_xlim) if spin_pool else np.array([])
 
         for idx, system_name in enumerate(system_names):
             atom_data = systems_data[system_name].get(aid)
@@ -1093,8 +1286,7 @@ def make_global_overlay_hist_figure(
                 if charges_plot.size > 0:
                     ax_q.hist(
                         charges_plot,
-                        bins=bins,
-                        range=charge_xlim,
+                        bins=charge_edges if charge_edges.size > 1 else bins_spec,
                         density=True,
                         alpha=0.30,
                         color=color,
@@ -1115,8 +1307,7 @@ def make_global_overlay_hist_figure(
                 if spins_plot.size > 0:
                     ax_s.hist(
                         spins_plot,
-                        bins=bins,
-                        range=spin_xlim,
+                        bins=spin_edges if spin_edges.size > 1 else bins_spec,
                         density=True,
                         alpha=0.30,
                         color=color,
@@ -1143,7 +1334,8 @@ def make_global_overlay_hist_figure(
         if has_s:
             if spin_xlim is not None:
                 ax_s.set_xlim(spin_xlim)
-            ax_s.set_xlabel(f"{analysis_label} spin")
+            spin_xlabel = spin_axis_label if spin_axis_label is not None else f"{analysis_label} spin"
+            ax_s.set_xlabel(spin_xlabel)
             ax_s.legend(fontsize=8)
         else:
             ax_s.text(0.5, 0.5, "No s data", transform=ax_s.transAxes, ha="center", va="center")
@@ -1167,6 +1359,16 @@ def main():
     )
 
     if mode in ("g",):
+        global_binning_choice = prompt_numbered_choice(
+            "Binning para histogramas globales:",
+            [("Automático (Freedman-Diaconis)", "fd"),
+             ("Automático (numpy auto)", "auto"),
+             ("Automático (Sturges)", "sturges"),
+             ("Fijo: elegir cantidad", "fixed_custom")],
+            default_idx=0
+        )
+        global_bins_spec = resolve_histogram_bins_spec(global_binning_choice)
+
         analysis_kind = prompt_numbered_choice(
             "Análisis a comparar en el modo global:",
             [("Loewdin", "loewdin"), ("Mulliken", "mulliken")],
@@ -1231,10 +1433,23 @@ def main():
                 if label:
                     atom_labels[aid] = label
 
-        systems_data, missing = collect_global_hist_data(base_dir, atom_map, analysis_kind)
+        systems_data, missing, spin_labels_found = collect_global_hist_data(base_dir, atom_map, analysis_kind)
         if not systems_data:
             print("Error: no se encontraron análisis previos compatibles en las subcarpetas del directorio actual.")
             sys.exit(1)
+
+        all_spin_labels = sorted({label for labels in spin_labels_found.values() for label in labels})
+        spin_axis_label = None
+        if all_spin_labels:
+            if len(all_spin_labels) > 1:
+                print("Error: se detectaron análisis globales mezclando representaciones de spin incompatibles:")
+                for system_name in sorted(spin_labels_found):
+                    labels = ", ".join(sorted(spin_labels_found[system_name]))
+                    print(f"  {system_name}: {labels}")
+                print("Reprocese las carpetas para que todas usen la misma representación de spin.")
+                sys.exit(1)
+            if all_spin_labels[0] == "spin_fraction":
+                spin_axis_label = f"{analysis_kind.capitalize()} spin fraction"
 
         print("Sistemas incluidos en el gráfico:")
         for system_name in systems_data:
@@ -1265,7 +1480,9 @@ def main():
             systems_data,
             atom_labels=atom_labels,
             analysis_label=analysis_kind.capitalize(),
+            spin_axis_label=spin_axis_label,
             fig_outname=fig_outname,
+            bins_spec=global_bins_spec,
             percentile=95.0
         )
         return
@@ -1274,12 +1491,15 @@ def main():
     prog = prompt_numbered_choice(
         "Programa con el cual se trabajará:",
         [("LIO", "lio"), ("ORCA", "orca")],
-        default_idx=0
+        default_idx=1
     )
 
     have_spin = False
     spin_sign = 1.0
     orca_mode = (prog == "orca")
+    population_config = {"mulliken": True, "loewdin": False}
+    active_charge_header = "# Mulliken Population Analysis"
+    active_spin_header = "# Mulliken Spin Population Analysis"
 
     if prog == "lio":
         # Archivos de cargas
@@ -1309,6 +1529,15 @@ def main():
         spin_sign = -1.0
     else:
         # ORCA: cada <prefijo>_N.out/.dat es un frame
+        population_choice = prompt_numbered_choice(
+            "Análisis de población a procesar para ORCA:",
+            [("Mulliken", "mulliken"),
+             ("Loewdin", "loewdin"),
+             ("Ambos", "both")],
+            default_idx=2
+        )
+        population_config = get_population_analysis_config(population_choice)
+
         orca_prefix = input(
             "Ingrese el prefijo de los archivos ORCA antes de _N (por ejemplo, TD o SP; Enter = autodetectar): "
         ).strip()
@@ -1328,23 +1557,33 @@ def main():
         for f in orca_files:
             print("  ", f)
 
-        build_orca_full_files(
-            orca_files,
-            "mq_orca_todo.dat",
-            "ms_orca_todo.dat",
-            label="Mulliken",
-            header_line="MULLIKEN ATOMIC CHARGES AND SPIN POPULATIONS"
-        )
-        build_orca_full_files(
-            orca_files,
-            "lq_orca_todo.dat",
-            "ls_orca_todo.dat",
-            label="Loewdin",
-            header_line="LOEWDIN ATOMIC CHARGES AND SPIN POPULATIONS"
-        )
+        if population_config["mulliken"]:
+            build_orca_full_files(
+                orca_files,
+                "mq_orca_todo.dat",
+                "ms_orca_todo.dat",
+                label="Mulliken",
+                header_line="MULLIKEN ATOMIC CHARGES AND SPIN POPULATIONS"
+            )
+        if population_config["loewdin"]:
+            build_orca_full_files(
+                orca_files,
+                "lq_orca_todo.dat",
+                "ls_orca_todo.dat",
+                label="Loewdin",
+                header_line="LOEWDIN ATOMIC CHARGES AND SPIN POPULATIONS"
+            )
         have_spin = True
-        charge_full = "mq_orca_todo.dat"
-        spin_full = "ms_orca_todo.dat"
+        if population_config["mulliken"]:
+            charge_full = "mq_orca_todo.dat"
+            spin_full = "ms_orca_todo.dat"
+            active_charge_header = "# Mulliken Population Analysis"
+            active_spin_header = "# Mulliken Spin Population Analysis"
+        else:
+            charge_full = "lq_orca_todo.dat"
+            spin_full = "ls_orca_todo.dat"
+            active_charge_header = "# Loewdin Population Analysis"
+            active_spin_header = "# Loewdin Spin Population Analysis"
         spin_sign = 1.0
 
     # Preguntar dt y átomos
@@ -1356,7 +1595,7 @@ def main():
         sys.exit(1)
 
     # Mostrar lista de átomos disponibles
-    atoms_list = get_atom_list_from_full(charge_full, "# Mulliken Population Analysis", lio=(prog == "lio"))
+    atoms_list = get_atom_list_from_full(charge_full, active_charge_header, lio=(prog == "lio"))
     if atoms_list:
         print("\nLista de átomos disponibles (id, tipo):")
         for aid, atype in atoms_list:
@@ -1394,6 +1633,24 @@ def main():
         default_idx=0
     )
 
+    hist_binning_choice = prompt_numbered_choice(
+        "Binning para histogramas del análisis individual:",
+        [("Automático (Freedman-Diaconis)", "fd"),
+         ("Automático (numpy auto)", "auto"),
+         ("Automático (Sturges)", "sturges"),
+         ("Fijo: elegir cantidad", "fixed_custom")],
+        default_idx=0
+    )
+    hist_bins_spec = resolve_histogram_bins_spec(hist_binning_choice)
+
+    spin_mode = prompt_numbered_choice(
+        "Representación para el análisis de spin:",
+        [("Spin directo del output", "raw"),
+         ("Spin como fracción del total de los átomos elegidos", "fraction")],
+        default_idx=1
+    )
+    spin_config = get_spin_representation_config(spin_mode)
+
     spin_keep_mask = None
     if have_spin:
         run_spin_check = prompt_numbered_choice(
@@ -1420,7 +1677,7 @@ def main():
                 dt_ps,
                 atom_ids,
                 kind="spin",
-                header_start="# Mulliken Spin Population Analysis",
+                header_start=active_spin_header,
                 spin_sign=spin_sign
             )
             spin_keep_mask = analyze_spin_consistency(
@@ -1437,7 +1694,7 @@ def main():
                     dt_ps,
                     atom_ids,
                     bad_mask=(~spin_keep_mask),
-                    header_start="# Mulliken Spin Population Analysis",
+                    header_start=active_spin_header,
                     spin_sign=spin_sign,
                     report_outname="spin_missing_atom_suggestions.dat"
                 )
@@ -1461,7 +1718,7 @@ def main():
                     )
                    
 
-    if orca_mode:
+    if orca_mode and population_config["mulliken"]:
         q_ts_out = "mulliken_charge_timeseries.dat"
         q_avg_out = "mulliken_charge_averages.dat"
         q_hist_prefix = "mulliken_charge_hist"
@@ -1482,117 +1739,132 @@ def main():
         s_modes_out = "ms_spin_modes.dat"
         mulliken_fig_out = "qs_histograms.png"
 
-    # --- Análisis de cargas ---
-    times, per_atom_q, hist_q = build_timeseries_and_stats(
-        charge_full,
-        dt_ps,
-        atom_ids,
-        kind="charge",
-        header_start="# Mulliken Population Analysis",
-        ts_outname=q_ts_out,
-        avg_outname=q_avg_out,
-        hist_prefix=q_hist_prefix,
-        modes_outname=q_modes_out,
-        nbins_hist=50,
-        keep_mask=spin_keep_mask
-    )
+    spin_column_label = spin_config["column_label"]
+    spin_axis_label = spin_config["axis_label"]
 
-    # --- Análisis de spin, si existe ---
-    hist_s = {}
-    per_atom_s = {aid: np.array([]) for aid in atom_ids}
-    if have_spin:
-        _times_spin, per_atom_s, hist_s = build_timeseries_and_stats(
-            spin_full,
+    if not orca_mode or population_config["mulliken"]:
+        mulliken_charge_mask = apply_keep_mask_or_warn(
+            spin_keep_mask,
+            parse_frame_data(charge_full, dt_ps, atom_ids, "charge", active_charge_header)[0].size,
+            "Mulliken charge" if orca_mode else "charge"
+        )
+        # --- Análisis de cargas ---
+        times, per_atom_q, hist_q = build_timeseries_and_stats(
+            charge_full,
             dt_ps,
             atom_ids,
-            kind="spin",
-            header_start="# Mulliken Spin Population Analysis",
-            ts_outname=s_ts_out,
-            avg_outname=s_avg_out,
-            hist_prefix=s_hist_prefix,
-            modes_outname=s_modes_out,
-            nbins_hist=50,
-            spin_sign=spin_sign,
-            keep_mask=spin_keep_mask
+            kind="charge",
+            header_start=active_charge_header,
+            ts_outname=q_ts_out,
+            avg_outname=q_avg_out,
+            hist_prefix=q_hist_prefix,
+            modes_outname=q_modes_out,
+            nbins_hist=hist_bins_spec,
+            keep_mask=mulliken_charge_mask
         )
-        # Se asume mismo dt y cantidad de frames; si hiciera falta se puede matchear más fino
-    else:
-        print("[INFO] No hay análisis de spin porque no se encontraron ms_*.dat.")
 
-    # --- Archivos por átomo: t, q, s (o t, q si no hay s) ---
-    for aid in atom_ids:
-        q_vals = np.asarray(per_atom_q.get(aid, []), dtype=float)
-
-        # times es el vector de tiempos devuelto por build_timeseries_and_stats (cargas)
-        if times.size != q_vals.size:
-            n = min(times.size, q_vals.size)
-            t_use = times[:n]
-            q_use = q_vals[:n]
+        # --- Análisis de spin, si existe ---
+        hist_s = {}
+        per_atom_s = {aid: np.array([]) for aid in atom_ids}
+        if have_spin:
+            mulliken_spin_mask = apply_keep_mask_or_warn(
+                spin_keep_mask,
+                parse_frame_data(spin_full, dt_ps, atom_ids, "spin", active_spin_header, spin_sign=spin_sign)[0].size,
+                "Mulliken spin" if orca_mode else "spin"
+            )
+            _times_spin, per_atom_s, hist_s = build_timeseries_and_stats(
+                spin_full,
+                dt_ps,
+                atom_ids,
+                kind="spin",
+                header_start=active_spin_header,
+                ts_outname=s_ts_out,
+                avg_outname=s_avg_out,
+                hist_prefix=s_hist_prefix,
+                modes_outname=s_modes_out,
+                nbins_hist=hist_bins_spec,
+                spin_sign=spin_sign,
+                keep_mask=mulliken_spin_mask,
+                normalize_spin_fraction=spin_config["normalize"]
+            )
         else:
-            t_use = times
-            q_use = q_vals
+            print("[INFO] No hay análisis de spin porque no se encontraron ms_*.dat.")
 
-        atom_out = f"atom_{aid}_qs_timeseries.dat"
-        with open(atom_out, "w") as out:
-            # ahora chequeamos tamaño del array de spin, no su “verdad” lógica
-            s_array = np.asarray(per_atom_s.get(aid, []), dtype=float)
-            if have_spin and s_array.size > 0:
-                if s_array.size != t_use.size:
-                    n = min(t_use.size, s_array.size)
-                    t_use = t_use[:n]
-                    q_use = q_use[:n]
-                    s_array = s_array[:n]
-                out.write("# time_ps  charge  spin\n")
-                for t, q, s in zip(t_use, q_use, s_array):
-                    out.write(f"{t: .7f} {q: .7f} {s: .7f}\n")
+        for aid in atom_ids:
+            q_vals = np.asarray(per_atom_q.get(aid, []), dtype=float)
+            if times.size != q_vals.size:
+                n = min(times.size, q_vals.size)
+                t_use = times[:n]
+                q_use = q_vals[:n]
             else:
-                out.write("# time_ps  charge\n")
-                for t, q in zip(t_use, q_use):
-                    out.write(f"{t: .7f} {q: .7f}\n")
+                t_use = times
+                q_use = q_vals
 
-        print(f"[OK] Serie temporal conjunta t, q, s para átomo {aid} escrita en '{atom_out}'.")
+            atom_out = f"atom_{aid}_qs_timeseries.dat"
+            with open(atom_out, "w") as out:
+                s_array = np.asarray(per_atom_s.get(aid, []), dtype=float)
+                if have_spin and s_array.size > 0:
+                    if s_array.size != t_use.size:
+                        n = min(t_use.size, s_array.size)
+                        t_use = t_use[:n]
+                        q_use = q_use[:n]
+                        s_array = s_array[:n]
+                    out.write(f"# time_ps  charge  {spin_column_label}\n")
+                    for t, q, s in zip(t_use, q_use, s_array):
+                        out.write(f"{t: .7f} {q: .7f} {s: .7f}\n")
+                else:
+                    out.write("# time_ps  charge\n")
+                    for t, q in zip(t_use, q_use):
+                        out.write(f"{t: .7f} {q: .7f}\n")
 
-    # --- Figura combinada q/s ---
-    make_combined_hist_figure(
-        atom_ids,
-        hist_charge=hist_q,
-        hist_spin=hist_s if have_spin else {},
-        atom_labels=atom_labels,
-        fig_outname=mulliken_fig_out
-    )
+            print(f"[OK] Serie temporal conjunta t, q, s para átomo {aid} escrita en '{atom_out}'.")
 
-    if make_time_plots:
-        mulliken_ts_fig_out = "mulliken_timeseries.png" if orca_mode else "qs_timeseries.png"
-        make_timeseries_figure(
-            times,
-            per_atom_q,
-            per_atom_s if have_spin else {},
-            atom_ids,
-            atom_labels=atom_labels,
-            fig_outname=mulliken_ts_fig_out
-        )
-
-    # Mantener compatibilidad con nombre histórico cuando se trabaja con ORCA
-    if orca_mode and mulliken_fig_out != "qs_histograms.png":
         make_combined_hist_figure(
             atom_ids,
             hist_charge=hist_q,
             hist_spin=hist_s if have_spin else {},
             atom_labels=atom_labels,
-            fig_outname="qs_histograms.png"
+            fig_outname=mulliken_fig_out
         )
-        if make_time_plots and mulliken_ts_fig_out != "qs_timeseries.png":
+
+        if make_time_plots:
+            mulliken_ts_fig_out = "mulliken_timeseries.png" if orca_mode else "qs_timeseries.png"
             make_timeseries_figure(
                 times,
                 per_atom_q,
                 per_atom_s if have_spin else {},
                 atom_ids,
                 atom_labels=atom_labels,
-                fig_outname="qs_timeseries.png"
+                fig_outname=mulliken_ts_fig_out,
+                spin_ylabel=spin_axis_label
             )
 
+        if orca_mode and mulliken_fig_out != "qs_histograms.png":
+            make_combined_hist_figure(
+                atom_ids,
+                hist_charge=hist_q,
+                hist_spin=hist_s if have_spin else {},
+                atom_labels=atom_labels,
+                fig_outname="qs_histograms.png"
+            )
+            if make_time_plots and mulliken_ts_fig_out != "qs_timeseries.png":
+                make_timeseries_figure(
+                    times,
+                    per_atom_q,
+                    per_atom_s if have_spin else {},
+                    atom_ids,
+                    atom_labels=atom_labels,
+                    fig_outname="qs_timeseries.png",
+                    spin_ylabel=spin_axis_label
+                )
+
     # --- ORCA: análisis Loewdin adicional ---
-    if orca_mode:
+    if orca_mode and population_config["loewdin"]:
+        loewdin_charge_mask = apply_keep_mask_or_warn(
+            spin_keep_mask,
+            parse_frame_data("lq_orca_todo.dat", dt_ps, atom_ids, "charge", "# Loewdin Population Analysis")[0].size,
+            "Loewdin charge"
+        )
         times_l, per_atom_q_l, hist_q_l = build_timeseries_and_stats(
             "lq_orca_todo.dat",
             dt_ps,
@@ -1603,12 +1875,17 @@ def main():
             avg_outname="loewdin_charge_averages.dat",
             hist_prefix="loewdin_charge_hist",
             modes_outname="loewdin_charge_modes.dat",
-            nbins_hist=50,
-            keep_mask=spin_keep_mask
+            nbins_hist=hist_bins_spec,
+            keep_mask=loewdin_charge_mask
         )
 
         hist_s_l = {}
         per_atom_s_l = {aid: np.array([]) for aid in atom_ids}
+        loewdin_spin_mask = apply_keep_mask_or_warn(
+            spin_keep_mask,
+            parse_frame_data("ls_orca_todo.dat", dt_ps, atom_ids, "spin", "# Loewdin Spin Population Analysis", spin_sign=spin_sign)[0].size,
+            "Loewdin spin"
+        )
         _times_spin_l, per_atom_s_l, hist_s_l = build_timeseries_and_stats(
             "ls_orca_todo.dat",
             dt_ps,
@@ -1619,9 +1896,10 @@ def main():
             avg_outname="loewdin_spin_averages.dat",
             hist_prefix="loewdin_spin_hist",
             modes_outname="loewdin_spin_modes.dat",
-            nbins_hist=50,
+            nbins_hist=hist_bins_spec,
             spin_sign=spin_sign,
-            keep_mask=spin_keep_mask
+            keep_mask=loewdin_spin_mask,
+            normalize_spin_fraction=spin_config["normalize"]
         )
 
         for aid in atom_ids:
@@ -1644,7 +1922,7 @@ def main():
                         t_use = t_use[:n]
                         q_use = q_use[:n]
                         s_array = s_array[:n]
-                    out.write("# time_ps  charge  spin\n")
+                    out.write(f"# time_ps  charge  {spin_column_label}\n")
                     for t, q, s in zip(t_use, q_use, s_array):
                         out.write(f"{t: .7f} {q: .7f} {s: .7f}\n")
                 else:
@@ -1669,7 +1947,8 @@ def main():
                 per_atom_s_l,
                 atom_ids,
                 atom_labels=atom_labels,
-                fig_outname="loewdin_timeseries.png"
+                fig_outname="loewdin_timeseries.png",
+                spin_ylabel=spin_axis_label
             )
 
 

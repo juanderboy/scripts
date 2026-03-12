@@ -239,6 +239,17 @@ def parse_selection_string(sel, n_files):
     return sorted(indices)
 
 
+def td_file_sort_key(path):
+    """
+    Orden natural para archivos tipo TD_N.out (N numérico).
+    """
+    base = os.path.basename(path)
+    match = re.search(r"TD_(\d+)", base)
+    if match:
+        return (0, int(match.group(1)), base.lower())
+    return (1, 0, base.lower())
+
+
 # ----------------------------------------------------------------------
 # Lógica para modo "archivo único"
 # ----------------------------------------------------------------------
@@ -432,7 +443,10 @@ def process_folder(folder, args):
         print(f"ERROR: '{folder}' no es una carpeta válida.")
         sys.exit(1)
 
-    td_files_all = sorted(glob.glob(os.path.join(folder, "TD_*.out")))
+    td_files_all = sorted(
+        glob.glob(os.path.join(folder, "TD_*.out")),
+        key=td_file_sort_key,
+    )
     if not td_files_all:
         print(f"No se encontraron archivos 'TD_*.out' en '{folder}'.")
         print("Por favor, recuerde que los archivos de salida de ORCA deben "
@@ -955,4 +969,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
