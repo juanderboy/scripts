@@ -612,26 +612,39 @@ def extract_orca_population_block(fname, header_line):
     """
     data = []
     in_section = False
+    started_rows = False
     with open(fname, "r") as f:
         for line in f:
             if header_line in line:
                 in_section = True
+                started_rows = False
                 continue
             if not in_section:
                 continue
 
             stripped = line.strip()
             if not stripped:
+                if started_rows:
+                    break
+                continue
+            if started_rows and not re.match(r"^\s*\d+\s+[A-Za-z]+", line):
                 break
             if stripped.startswith("Sum of atomic charges"):
                 break
             if stripped.startswith("MULLIKEN REDUCED"):
                 break
+            if stripped.startswith("Total integrated alpha density"):
+                continue
+            if stripped.startswith("Total integrated beta density"):
+                continue
+            if stripped.startswith("ATOM"):
+                continue
             if stripped.startswith("---"):
                 continue
 
-            m = re.match(r"^\s*(\d+)\s+([A-Za-z]+)\s*:\s*([-\d\.Ee+]+)\s+([-\d\.Ee+]+)", line)
+            m = re.match(r"^\s*(\d+)\s+([A-Za-z]+)\s*(?::\s*)?([-\d\.Ee+]+)\s+([-\d\.Ee+]+)\s*$", line)
             if m:
+                started_rows = True
                 atom_idx = int(m.group(1))
                 element = m.group(2)
                 charge = float(m.group(3))
@@ -989,14 +1002,16 @@ def get_population_analysis_config(choice):
     Return which population analyses must be processed.
     """
     if choice == "mulliken":
-        return {"mulliken": True, "loewdin": False, "chelpg_loewdin": False, "chelpg_mulliken": False}
+        return {"mulliken": True, "loewdin": False, "hirshfeld": False, "chelpg_loewdin": False, "chelpg_mulliken": False}
     if choice == "loewdin":
-        return {"mulliken": False, "loewdin": True, "chelpg_loewdin": False, "chelpg_mulliken": False}
+        return {"mulliken": False, "loewdin": True, "hirshfeld": False, "chelpg_loewdin": False, "chelpg_mulliken": False}
+    if choice == "hirshfeld":
+        return {"mulliken": False, "loewdin": False, "hirshfeld": True, "chelpg_loewdin": False, "chelpg_mulliken": False}
     if choice == "chelpg_loewdin":
-        return {"mulliken": False, "loewdin": False, "chelpg_loewdin": True, "chelpg_mulliken": False}
+        return {"mulliken": False, "loewdin": False, "hirshfeld": False, "chelpg_loewdin": True, "chelpg_mulliken": False}
     if choice == "chelpg_mulliken":
-        return {"mulliken": False, "loewdin": False, "chelpg_loewdin": False, "chelpg_mulliken": True}
-    return {"mulliken": True, "loewdin": True, "chelpg_loewdin": True, "chelpg_mulliken": True}
+        return {"mulliken": False, "loewdin": False, "hirshfeld": False, "chelpg_loewdin": False, "chelpg_mulliken": True}
+    return {"mulliken": True, "loewdin": True, "hirshfeld": True, "chelpg_loewdin": True, "chelpg_mulliken": True}
 
 
 def get_histogram_binning_config(choice):
@@ -1019,6 +1034,7 @@ def get_analysis_display_label(analysis_kind):
     labels = {
         "mulliken": "Mulliken",
         "loewdin": "Loewdin",
+        "hirshfeld": "Hirshfeld",
         "chelpg": "CHELPG",
         "chelpg_loewdin": "CHELPG",
         "chelpg_mulliken": "CHELPG",
@@ -1207,6 +1223,7 @@ def discover_global_analysis_dirs(base_dir):
                 "qs_histograms.png",
                 "mulliken_histograms.png",
                 "loewdin_histograms.png",
+                "hirshfeld_histograms.png",
                 "chelpg_histograms.png",
                 "chelpg_loewdin_histograms.png",
                 "chelpg_mulliken_histograms.png",
@@ -1227,6 +1244,7 @@ def collect_global_hist_data(base_dir, atom_map, analysis_kind):
     suffix_map = {
         "mulliken": ["qs"],
         "loewdin": ["loewdin"],
+        "hirshfeld": ["hirshfeld"],
         "chelpg": ["chelpg", "chelpg_loewdin"],
         "chelpg_loewdin": ["chelpg_loewdin", "chelpg"],
         "chelpg_mulliken": ["chelpg_mulliken"],
@@ -1504,6 +1522,7 @@ def main():
             "Population analysis to compare in global mode:",
             [("Loewdin", "loewdin"),
              ("Mulliken", "mulliken"),
+             ("Hirshfeld", "hirshfeld"),
              ("CHELPG (charge) + Loewdin (spin)", "chelpg_loewdin"),
              ("CHELPG (charge) + Mulliken (spin)", "chelpg_mulliken")],
             default_idx=0
@@ -1641,7 +1660,7 @@ def main():
     have_spin = False
     spin_sign = 1.0
     orca_mode = (prog == "orca")
-    population_config = {"mulliken": True, "loewdin": False, "chelpg_loewdin": False, "chelpg_mulliken": False}
+    population_config = {"mulliken": True, "loewdin": False, "hirshfeld": False, "chelpg_loewdin": False, "chelpg_mulliken": False}
     primary_analysis_kind = None
     active_charge_header = "# Mulliken Population Analysis"
     active_spin_header = "# Mulliken Spin Population Analysis"
@@ -1680,10 +1699,11 @@ def main():
             "Population analysis to process for ORCA:",
             [("Mulliken", "mulliken"),
              ("Loewdin", "loewdin"),
+             ("Hirshfeld", "hirshfeld"),
              ("CHELPG (charges) + Loewdin (spins)", "chelpg_loewdin"),
              ("CHELPG (charges) + Mulliken (spins)", "chelpg_mulliken"),
              ("All", "all")],
-            default_idx=4
+            default_idx=5
         )
         population_config = get_population_analysis_config(population_choice)
 
@@ -1722,6 +1742,14 @@ def main():
                 charge_label="Loewdin",
                 charge_header_line="LOEWDIN ATOMIC CHARGES AND SPIN POPULATIONS"
             )
+        if population_config["hirshfeld"]:
+            build_orca_full_files(
+                orca_files,
+                "hq_orca_todo.dat",
+                "hs_orca_todo.dat",
+                charge_label="Hirshfeld",
+                charge_header_line="HIRSHFELD ANALYSIS"
+            )
         if population_config["chelpg_loewdin"]:
             build_orca_full_files(
                 orca_files,
@@ -1757,6 +1785,13 @@ def main():
             active_charge_header = "# Loewdin Population Analysis"
             active_spin_header = "# Loewdin Spin Population Analysis"
             active_charge_axis_label = "Loewdin charge"
+        elif population_config["hirshfeld"]:
+            primary_analysis_kind = "hirshfeld"
+            charge_full = "hq_orca_todo.dat"
+            spin_full = "hs_orca_todo.dat"
+            active_charge_header = "# Hirshfeld Population Analysis"
+            active_spin_header = "# Hirshfeld Spin Population Analysis"
+            active_charge_axis_label = "Hirshfeld charge"
         elif population_config["chelpg_loewdin"]:
             primary_analysis_kind = "chelpg_loewdin"
             charge_full = "cq_loewdin_orca_todo.dat"
@@ -1841,6 +1876,8 @@ def main():
     spin_config = get_spin_representation_config(spin_mode)
     if orca_mode and primary_analysis_kind in ("loewdin", "chelpg_loewdin"):
         active_spin_axis_label = "Loewdin spin fraction" if spin_config["normalize"] else "Loewdin spin"
+    elif orca_mode and primary_analysis_kind == "hirshfeld":
+        active_spin_axis_label = "Hirshfeld spin fraction" if spin_config["normalize"] else "Hirshfeld spin"
     elif orca_mode and primary_analysis_kind == "chelpg_mulliken":
         active_spin_axis_label = "Mulliken spin fraction" if spin_config["normalize"] else "Mulliken spin"
     else:
@@ -1933,6 +1970,16 @@ def main():
         s_hist_prefix = "loewdin_spin_hist"
         s_modes_out = "loewdin_spin_modes.dat"
         mulliken_fig_out = "loewdin_histograms.png"
+    elif orca_mode and primary_analysis_kind == "hirshfeld":
+        q_ts_out = "hirshfeld_charge_timeseries.dat"
+        q_avg_out = "hirshfeld_charge_averages.dat"
+        q_hist_prefix = "hirshfeld_charge_hist"
+        q_modes_out = "hirshfeld_charge_modes.dat"
+        s_ts_out = "hirshfeld_spin_timeseries.dat"
+        s_avg_out = "hirshfeld_spin_averages.dat"
+        s_hist_prefix = "hirshfeld_spin_hist"
+        s_modes_out = "hirshfeld_spin_modes.dat"
+        mulliken_fig_out = "hirshfeld_histograms.png"
     elif orca_mode and primary_analysis_kind == "chelpg_loewdin":
         q_ts_out = "chelpg_loewdin_charge_timeseries.dat"
         q_avg_out = "chelpg_loewdin_charge_averages.dat"
@@ -2028,6 +2075,8 @@ def main():
 
             if orca_mode and primary_analysis_kind == "loewdin":
                 atom_out = f"atom_{aid}_loewdin_timeseries.dat"
+            elif orca_mode and primary_analysis_kind == "hirshfeld":
+                atom_out = f"atom_{aid}_hirshfeld_timeseries.dat"
             elif orca_mode and primary_analysis_kind == "chelpg_loewdin":
                 atom_out = f"atom_{aid}_chelpg_loewdin_timeseries.dat"
             elif orca_mode and primary_analysis_kind == "chelpg_mulliken":
@@ -2066,6 +2115,8 @@ def main():
                 mulliken_ts_fig_out = "mulliken_timeseries.png"
             elif orca_mode and primary_analysis_kind == "loewdin":
                 mulliken_ts_fig_out = "loewdin_timeseries.png"
+            elif orca_mode and primary_analysis_kind == "hirshfeld":
+                mulliken_ts_fig_out = "hirshfeld_timeseries.png"
             elif orca_mode and primary_analysis_kind == "chelpg_loewdin":
                 mulliken_ts_fig_out = "chelpg_loewdin_timeseries.png"
             elif orca_mode and primary_analysis_kind == "chelpg_mulliken":
@@ -2194,6 +2245,100 @@ def main():
                 atom_labels=atom_labels,
                 fig_outname="loewdin_timeseries.png",
                 spin_ylabel="Loewdin spin fraction" if spin_config["normalize"] else "Loewdin spin"
+            )
+
+    # --- ORCA: additional Hirshfeld analysis ---
+    if orca_mode and population_config["hirshfeld"] and primary_analysis_kind != "hirshfeld":
+        hirshfeld_charge_mask = apply_keep_mask_or_warn(
+            spin_keep_mask,
+            parse_frame_data("hq_orca_todo.dat", dt_ps, atom_ids, "charge", "# Hirshfeld Population Analysis")[0].size,
+            "Hirshfeld charge"
+        )
+        times_h, per_atom_q_h, hist_q_h = build_timeseries_and_stats(
+            "hq_orca_todo.dat",
+            dt_ps,
+            atom_ids,
+            kind="charge",
+            header_start="# Hirshfeld Population Analysis",
+            ts_outname="hirshfeld_charge_timeseries.dat",
+            avg_outname="hirshfeld_charge_averages.dat",
+            hist_prefix="hirshfeld_charge_hist",
+            modes_outname="hirshfeld_charge_modes.dat",
+            nbins_hist=hist_bins_spec,
+            keep_mask=hirshfeld_charge_mask
+        )
+
+        hist_s_h = {}
+        per_atom_s_h = {aid: np.array([]) for aid in atom_ids}
+        hirshfeld_spin_mask = apply_keep_mask_or_warn(
+            spin_keep_mask,
+            parse_frame_data("hs_orca_todo.dat", dt_ps, atom_ids, "spin", "# Hirshfeld Spin Population Analysis", spin_sign=spin_sign)[0].size,
+            "Hirshfeld spin"
+        )
+        _times_spin_h, per_atom_s_h, hist_s_h = build_timeseries_and_stats(
+            "hs_orca_todo.dat",
+            dt_ps,
+            atom_ids,
+            kind="spin",
+            header_start="# Hirshfeld Spin Population Analysis",
+            ts_outname="hirshfeld_spin_timeseries.dat",
+            avg_outname="hirshfeld_spin_averages.dat",
+            hist_prefix="hirshfeld_spin_hist",
+            modes_outname="hirshfeld_spin_modes.dat",
+            nbins_hist=hist_bins_spec,
+            spin_sign=spin_sign,
+            keep_mask=hirshfeld_spin_mask,
+            normalize_spin_fraction=spin_config["normalize"]
+        )
+
+        for aid in atom_ids:
+            q_vals = np.asarray(per_atom_q_h.get(aid, []), dtype=float)
+
+            if times_h.size != q_vals.size:
+                n = min(times_h.size, q_vals.size)
+                t_use = times_h[:n]
+                q_use = q_vals[:n]
+            else:
+                t_use = times_h
+                q_use = q_vals
+
+            atom_out = f"atom_{aid}_hirshfeld_timeseries.dat"
+            with open(atom_out, "w") as out:
+                s_array = np.asarray(per_atom_s_h.get(aid, []), dtype=float)
+                if s_array.size > 0:
+                    if s_array.size != t_use.size:
+                        n = min(t_use.size, s_array.size)
+                        t_use = t_use[:n]
+                        q_use = q_use[:n]
+                        s_array = s_array[:n]
+                    out.write(f"# time_ps  charge  {spin_column_label}\n")
+                    for t, q, s in zip(t_use, q_use, s_array):
+                        out.write(f"{t: .7f} {q: .7f} {s: .7f}\n")
+                else:
+                    out.write("# time_ps  charge\n")
+                    for t, q in zip(t_use, q_use):
+                        out.write(f"{t: .7f} {q: .7f}\n")
+
+            print(f"[OK] Hirshfeld time series for atom {aid} written to '{atom_out}'.")
+
+        make_combined_hist_figure(
+            atom_ids,
+            hist_charge=hist_q_h,
+            hist_spin=hist_s_h,
+            atom_labels=atom_labels,
+            charge_axis_label="Hirshfeld charge",
+            fig_outname="hirshfeld_histograms.png"
+        )
+
+        if make_time_plots:
+            make_timeseries_figure(
+                times_h,
+                per_atom_q_h,
+                per_atom_s_h,
+                atom_ids,
+                atom_labels=atom_labels,
+                fig_outname="hirshfeld_timeseries.png",
+                spin_ylabel="Hirshfeld spin fraction" if spin_config["normalize"] else "Hirshfeld spin"
             )
 
     # --- ORCA: additional CHELPG + Loewdin analysis ---
