@@ -84,6 +84,8 @@ from pathlib import Path
 import numpy as np
 from scipy.optimize import minimize, minimize_scalar, nnls
 
+from kd_to_txt import convert_kd
+
 
 MODEL_LABELS = {
     "a_to_b": "A -> B irreversible de primer orden",
@@ -137,6 +139,30 @@ def read_experiment(path: str | Path, delimiter: str = ";") -> Experiment:
     wavelength = data[1:, 0]
     absorbance = data[1:, 1:]
     return Experiment(t=t, wavelength=wavelength, absorbance=absorbance)
+
+
+def resolve_input_file(args: argparse.Namespace) -> Path:
+    """Convert KD input files to text and return the file to analyze."""
+    input_path = Path(args.input)
+    if input_path.suffix.lower() != ".kd":
+        return input_path
+
+    output_path = input_path.with_name(f"{input_path.stem}-converted.txt")
+    n_spectra, n_wavelengths, lambda_first, lambda_last = convert_kd(
+        input_path,
+        output_path,
+        lambda_start=args.kd_lambda_start,
+        lambda_step=args.kd_lambda_step,
+    )
+
+    print("KD file detected. Converted before analysis.")
+    print(f"converted file: {output_path}")
+    print(f"spectra / times: {n_spectra}")
+    print(f"wavelength points: {n_wavelengths}")
+    print(f"wavelength range: {lambda_first:g} - {lambda_last:g}")
+    print()
+
+    return output_path
 
 
 def baseline_correct(absorbance: np.ndarray, n_points: int = 20) -> np.ndarray:
@@ -505,18 +531,8 @@ def find_isosbestic_points(experiment: Experiment) -> np.ndarray:
     return np.array(crossings)
 
 
-def add_isosbestic_markers(ax, experiment: Experiment) -> np.ndarray:
-    """Mark estimated isosbestic points and return their wavelengths."""
-    isosbestic = find_isosbestic_points(experiment)
-
-    for wavelength in isosbestic:
-        ax.axvline(wavelength, color="0.25", linestyle=":", linewidth=0.9, alpha=0.75)
-
-    return isosbestic
-
-
 def add_two_species_direction_guides(ax, experiment: Experiment) -> None:
-    """Add isosbestic markers and one direction arrow per monotonic region."""
+    """Add one direction arrow per region separated by estimated isosbestic points."""
     if experiment.t.size < 2 or experiment.wavelength.size < 3:
         return
 
@@ -526,7 +542,7 @@ def add_two_species_direction_guides(ax, experiment: Experiment) -> None:
     if not np.isfinite(max_delta) or max_delta <= 0:
         return
 
-    isosbestic = add_isosbestic_markers(ax, experiment)
+    isosbestic = find_isosbestic_points(experiment)
     boundaries = np.concatenate(
         (
             [float(experiment.wavelength[0])],
@@ -1146,6 +1162,18 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="1-based spectra to remove before fitting, e.g. '1' or '1,4-6'",
     )
+    parser.add_argument(
+        "--kd-lambda-start",
+        type=float,
+        default=None,
+        help="Override first wavelength when converting KD files",
+    )
+    parser.add_argument(
+        "--kd-lambda-step",
+        type=float,
+        default=None,
+        help="Override wavelength step when converting KD files",
+    )
     parser.add_argument("--c0", type=float, default=1.0, help="Initial concentration in M")
     parser.add_argument(
         "--k-min",
@@ -1336,7 +1364,8 @@ def main() -> None:
     args = build_parser().parse_args()
 
     print_startup_banner()
-    experiment = read_experiment(args.input)
+    input_path = resolve_input_file(args)
+    experiment = read_experiment(input_path)
 
     model = args.model
     if not args.no_plot and not args.skip_preprocess_dialog:
@@ -1359,7 +1388,7 @@ def main() -> None:
         k_bounds=(args.k_min, args.k_max),
     )
 
-    print(f"Input file: {args.input}")
+    print(f"Input file: {input_path}")
     print(f"Data matrix: {cropped.absorbance.shape[0]} wavelengths x {cropped.absorbance.shape[1]} times")
     print(f"Wavelength range: {cropped.wavelength[0]:g} - {cropped.wavelength[-1]:g}")
     print(f"Time range: {cropped.t[0]:g} - {cropped.t[-1]:g}")
