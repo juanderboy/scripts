@@ -553,6 +553,515 @@ def apply_keep_mask_or_warn(keep_mask, n_frames, analysis_label):
     return keep_mask
 
 
+def sanitize_output_token(value):
+    """
+    Convert an identifier into a safe token for headers and filenames.
+    """
+    text = str(value).strip()
+    if not text:
+        return "unnamed"
+    sanitized = re.sub(r"[^A-Za-z0-9_.-]+", "_", text)
+    sanitized = sanitized.strip("._-")
+    return sanitized or "unnamed"
+
+
+def append_suffix_to_path(path, suffix):
+    """
+    Insert a suffix before the file extension.
+    """
+    root, ext = os.path.splitext(path)
+    return f"{root}_{suffix}{ext}"
+
+
+def format_summary_stat(value):
+    """
+    Format a numeric summary value for terminal output.
+    """
+    if value is None:
+        return "n/a"
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if np.isnan(value):
+        return "n/a"
+    return f"{value:.4f}"
+
+
+def build_terminal_summary_entry(analysis_label, entity_ids, atom_labels, per_atom_charge, per_atom_spin, hist_charge, hist_spin):
+    """
+    Build one summary section for terminal display.
+    """
+    rows = []
+    for entity_id in entity_ids:
+        q_vals = np.asarray(per_atom_charge.get(entity_id, []), dtype=float)
+        s_vals = np.asarray(per_atom_spin.get(entity_id, []), dtype=float)
+        q_hist = hist_charge.get(entity_id, {})
+        s_hist = hist_spin.get(entity_id, {})
+        q_peaks = np.asarray(q_hist.get("peaks", []), dtype=float)
+        s_peaks = np.asarray(s_hist.get("peaks", []), dtype=float)
+
+        rows.append(
+            {
+                "entity": atom_labels.get(entity_id, str(entity_id)),
+                "q_n": int(q_vals.size),
+                "q_avg": float(q_vals.mean()) if q_vals.size > 0 else None,
+                "q_peak": float(q_peaks[0]) if q_peaks.size > 0 else None,
+                "q_peaks": [float(val) for val in q_peaks],
+                "s_n": int(s_vals.size),
+                "s_avg": float(s_vals.mean()) if s_vals.size > 0 else None,
+                "s_peak": float(s_peaks[0]) if s_peaks.size > 0 else None,
+                "s_peaks": [float(val) for val in s_peaks],
+            }
+        )
+
+    return {"analysis": analysis_label, "rows": rows}
+
+
+def print_terminal_analysis_summary(summary_entries):
+    """
+    Print a compact boxed summary at the end of a single-system analysis.
+    """
+    if not summary_entries:
+        return
+
+    lines = ["STATISTICAL SUMMARY"]
+    for entry in summary_entries:
+        lines.append(f"Analysis: {entry['analysis']}")
+        lines.append("entity                q_n     q_avg    q_peak     s_n     s_avg    s_peak")
+        for row in entry["rows"]:
+            lines.append(
+                f"{row['entity'][:20]:20s} "
+                f"{row['q_n']:6d} "
+                f"{format_summary_stat(row['q_avg']):>9s} "
+                f"{format_summary_stat(row['q_peak']):>9s} "
+                f"{row['s_n']:6d} "
+                f"{format_summary_stat(row['s_avg']):>9s} "
+                f"{format_summary_stat(row['s_peak']):>9s}"
+            )
+            if row["q_peaks"]:
+                q_modes = ", ".join(format_summary_stat(val) for val in row["q_peaks"])
+                lines.append(f"  q_modes: {q_modes}")
+            if row["s_peaks"]:
+                s_modes = ", ".join(format_summary_stat(val) for val in row["s_peaks"])
+                lines.append(f"  s_modes: {s_modes}")
+        lines.append("")
+
+    content_width = max(len(line) for line in lines)
+    border = "+" + "-" * (content_width + 2) + "+"
+    print("")
+    print(border)
+    for line in lines:
+        print(f"| {line.ljust(content_width)} |")
+    print(border)
+
+
+def build_global_terminal_summary_entry(analysis_label, systems_data, entity_ids, atom_labels):
+    """
+    Build a global summary section grouped by system and entity.
+    """
+    rows = []
+    for system_name in systems_data:
+        for entity_id in entity_ids:
+            entity_data = systems_data[system_name].get(entity_id)
+            if entity_data is None:
+                continue
+
+            q_vals = np.asarray(entity_data.get("charge", []), dtype=float)
+            s_vals = np.asarray(entity_data.get("spin", []), dtype=float)
+            q_vals = q_vals[~np.isnan(q_vals)]
+            s_vals = s_vals[~np.isnan(s_vals)]
+            q_peaks = analyze_modes_kde(q_vals)[2] if q_vals.size > 0 else np.array([])
+            s_peaks = analyze_modes_kde(s_vals)[2] if s_vals.size > 0 else np.array([])
+
+            rows.append(
+                {
+                    "system": system_name,
+                    "entity": atom_labels.get(entity_id, str(entity_id)),
+                    "q_n": int(q_vals.size),
+                    "q_avg": float(q_vals.mean()) if q_vals.size > 0 else None,
+                    "q_peak": float(q_peaks[0]) if q_peaks.size > 0 else None,
+                    "q_peaks": [float(val) for val in q_peaks],
+                    "s_n": int(s_vals.size),
+                    "s_avg": float(s_vals.mean()) if s_vals.size > 0 else None,
+                    "s_peak": float(s_peaks[0]) if s_peaks.size > 0 else None,
+                    "s_peaks": [float(val) for val in s_peaks],
+                }
+            )
+
+    return {"analysis": analysis_label, "rows": rows}
+
+
+def print_terminal_global_summary(summary_entries):
+    """
+    Print a compact boxed summary at the end of global analysis.
+    """
+    if not summary_entries:
+        return
+
+    lines = ["GLOBAL STATISTICAL SUMMARY"]
+    for entry in summary_entries:
+        lines.append(f"Analysis: {entry['analysis']}")
+        lines.append("system           entity                q_n     q_avg    q_peak     s_n     s_avg    s_peak")
+        for row in entry["rows"]:
+            lines.append(
+                f"{row['system'][:15]:15s} "
+                f"{row['entity'][:20]:20s} "
+                f"{row['q_n']:6d} "
+                f"{format_summary_stat(row['q_avg']):>9s} "
+                f"{format_summary_stat(row['q_peak']):>9s} "
+                f"{row['s_n']:6d} "
+                f"{format_summary_stat(row['s_avg']):>9s} "
+                f"{format_summary_stat(row['s_peak']):>9s}"
+            )
+            if row["q_peaks"]:
+                q_modes = ", ".join(format_summary_stat(val) for val in row["q_peaks"])
+                lines.append(f"  q_modes: {q_modes}")
+            if row["s_peaks"]:
+                s_modes = ", ".join(format_summary_stat(val) for val in row["s_peaks"])
+                lines.append(f"  s_modes: {s_modes}")
+        lines.append("")
+
+    content_width = max(len(line) for line in lines)
+    border = "+" + "-" * (content_width + 2) + "+"
+    print("")
+    print(border)
+    for line in lines:
+        print(f"| {line.ljust(content_width)} |")
+    print(border)
+
+
+def build_analysis_entities(atom_ids, atom_labels, actor_config=None):
+    """
+    Return the entities that will be plotted/analyzed.
+    """
+    entities = [
+        {"id": aid, "label": atom_labels.get(aid, str(aid)), "atom_ids": [aid]}
+        for aid in atom_ids
+    ]
+    if actor_config is not None:
+        entities.append(
+            {
+                "id": actor_config["id"],
+                "label": actor_config["label"],
+                "atom_ids": list(actor_config["atom_ids"]),
+            }
+        )
+    return entities
+
+
+def get_analysis_entity_ids(atom_ids, actor_config=None):
+    """
+    Return the ordered identifiers used in plots/combined outputs.
+    """
+    entity_ids = list(atom_ids)
+    if actor_config is not None:
+        entity_ids.append(actor_config["id"])
+    return entity_ids
+
+
+def build_grouped_timeseries_and_stats(
+    fullfile,
+    dt_ps,
+    entities,
+    kind,
+    header_start,
+    ts_outname,
+    avg_outname,
+    hist_prefix,
+    modes_outname,
+    nbins_hist=50,
+    spin_sign=1.0,
+    keep_mask=None,
+    normalize_spin_fraction=False
+):
+    """
+    Analyze a merged file for arbitrary entities, where each entity can be one atom
+    or a grouped sum of several atoms.
+    """
+    entities = list(entities)
+    unique_atom_ids = []
+    for entity in entities:
+        for aid in entity["atom_ids"]:
+            if aid not in unique_atom_ids:
+                unique_atom_ids.append(aid)
+
+    times, raw_values, _frame_totals = parse_frame_data(
+        fullfile,
+        dt_ps,
+        unique_atom_ids,
+        kind,
+        header_start,
+        spin_sign=spin_sign
+    )
+
+    if keep_mask is not None:
+        keep_mask = np.asarray(keep_mask, dtype=bool)
+        if keep_mask.size != times.size:
+            print(
+                f"[WARN] An incompatible snapshot mask was ignored for '{fullfile}': "
+                f"mask={keep_mask.size}, frames={times.size}."
+            )
+        else:
+            times = times[keep_mask]
+            raw_values = raw_values[keep_mask, :]
+
+    grouped_values = np.full((times.size, len(entities)), np.nan, dtype=float)
+    atom_idx_map = {aid: idx for idx, aid in enumerate(unique_atom_ids)}
+    for entity_idx, entity in enumerate(entities):
+        group_indices = [atom_idx_map[aid] for aid in entity["atom_ids"] if aid in atom_idx_map]
+        if not group_indices:
+            continue
+        group_matrix = raw_values[:, group_indices]
+        valid_rows = ~np.isnan(group_matrix).any(axis=1)
+        if np.any(valid_rows):
+            grouped_values[valid_rows, entity_idx] = np.sum(group_matrix[valid_rows, :], axis=1)
+
+    if kind == "spin" and normalize_spin_fraction:
+        grouped_values = normalize_selected_spin_values(grouped_values)
+
+    data = np.column_stack((times, grouped_values)) if times.size > 0 else np.empty((0, len(entities) + 1))
+
+    with open(ts_outname, "w") as out:
+        if kind == "spin" and normalize_spin_fraction:
+            header = ["time_ps"] + [f"spin_fraction_{sanitize_output_token(entity['id'])}" for entity in entities]
+        else:
+            header = ["time_ps"] + [f"{kind}_{sanitize_output_token(entity['id'])}" for entity in entities]
+        out.write("# " + " ".join(header) + "\n")
+        for row in data:
+            formatted = []
+            for val in row:
+                if isinstance(val, float):
+                    formatted.append(f"{val: .7f}")
+                else:
+                    formatted.append(str(val))
+            out.write(" ".join(formatted) + "\n")
+
+    print(f"[OK] {kind.capitalize()} time series written to '{ts_outname}'.")
+
+    if data.size == 0:
+        times = np.array([])
+        values = np.empty((0, len(entities)))
+    else:
+        data = np.array(data, dtype=float)
+        times = data[:, 0]
+        values = data[:, 1:]
+
+    per_entity_values = {entity["id"]: np.array([]) for entity in entities}
+    for i, entity in enumerate(entities):
+        col = values[:, i]
+        mask = ~np.isnan(col)
+        per_entity_values[entity["id"]] = col[mask]
+
+    with open(avg_outname, "w") as out:
+        if kind == "spin" and normalize_spin_fraction:
+            out.write("# Spin averages as fractions of the total spin of the displayed entities\n")
+        else:
+            out.write(f"# Average {kind} values\n")
+        out.write("# entity_id  avg_value\n")
+        for entity in entities:
+            entity_id = entity["id"]
+            vals = per_entity_values[entity_id]
+            if vals.size > 0:
+                out.write(f"{sanitize_output_token(entity_id)}  {vals.mean(): .7f}\n")
+            else:
+                out.write(f"{sanitize_output_token(entity_id)}  nan\n")
+
+    print(f"[OK] Average {kind} values written to '{avg_outname}'.")
+
+    modes_summary = []
+    hist_data_for_plot = {}
+
+    for i, entity in enumerate(entities):
+        entity_id = entity["id"]
+        vals = per_entity_values[entity_id]
+        vals = vals[~np.isnan(vals)]
+        if vals.size == 0:
+            print(f"[WARN] No valid {kind} data found for entity {entity['label']}.")
+            continue
+
+        vmin, vmax = vals.min(), vals.max()
+        safe_id = sanitize_output_token(entity_id)
+
+        if vmin == vmax:
+            xs = np.array([vmin])
+            dens = np.array([1.0])
+            peaks = np.array([vmin])
+            peak_heights = np.array([1.0])
+
+            hist_outname = f"{hist_prefix}_entity_{safe_id}.dat"
+            with open(hist_outname, "w") as out:
+                out.write("# Histogram: bin_center  count\n")
+                out.write(f"{vmin: .7f} {vals.size}\n")
+                out.write("\n# KDE: x  density\n")
+                out.write(f"{vmin: .7f} {dens[0]: .7e}\n")
+            print(f"[OK] Trivial {kind} histogram for entity {entity['label']} written to '{hist_outname}'.")
+
+            modes_summary.append((safe_id, peaks))
+            hist_data_for_plot[entity_id] = {
+                "bin_centers": np.array([vmin]),
+                "counts_norm": np.array([1.0]),
+                "xs": xs,
+                "dens": dens,
+                "peaks": peaks,
+                "axis_label": "Spin fraction" if kind == "spin" and normalize_spin_fraction else None
+            }
+            continue
+
+        bin_edges = get_histogram_edges(vals, bins_spec=nbins_hist, value_range=(vmin, vmax))
+        counts, bin_edges = np.histogram(vals, bins=bin_edges)
+        bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+        counts_norm = counts / counts.sum()
+        xs, dens, peak_positions, peak_heights = analyze_modes_kde(vals)
+
+        hist_outname = f"{hist_prefix}_entity_{safe_id}.dat"
+        with open(hist_outname, "w") as out:
+            out.write("# Histogram: bin_center  count\n")
+            for c, center in zip(counts, bin_centers):
+                out.write(f"{center: .7f} {c:d}\n")
+            out.write("\n# KDE: x  density\n")
+            if xs.size > 0 and dens.size > 0:
+                for x_val, d_val in zip(xs, dens):
+                    out.write(f"{x_val: .7f} {d_val: .7e}\n")
+
+        print(f"[OK] {kind.capitalize()} histogram for entity {entity['label']} written to '{hist_outname}'.")
+
+        modes_summary.append((safe_id, peak_positions))
+        if len(peak_positions) == 1:
+            print(f"    Entity {entity['label']}: unimodal {kind} distribution. Peak ≈ {peak_positions[0]: .4f}")
+        else:
+            print(f"    Entity {entity['label']}: {len(peak_positions)} modes detected in {kind}.")
+            for k, mu in enumerate(peak_positions):
+                print(f"        Mode {k+1}: {kind} ≈ {mu: .4f}")
+
+        hist_data_for_plot[entity_id] = {
+            "bin_centers": bin_centers,
+            "counts_norm": counts_norm,
+            "xs": xs,
+            "dens": dens,
+            "peaks": peak_positions,
+            "axis_label": "Spin fraction" if kind == "spin" and normalize_spin_fraction else None
+        }
+
+    with open(modes_outname, "w") as out:
+        out.write(f"# entity_id  n_modes  peak_positions_{kind}(approx)\n")
+        for safe_id, peaks in modes_summary:
+            if len(peaks) == 0:
+                out.write(f"{safe_id}  0\n")
+            else:
+                peaks_str = " ".join(f"{mu: .6f}" for mu in peaks)
+                out.write(f"{safe_id}  {len(peaks):2d}  {peaks_str}\n")
+
+    print(f"[OK] {kind.capitalize()} mode summary written to '{modes_outname}'.")
+
+    return times, per_entity_values, hist_data_for_plot
+
+
+def build_analysis_timeseries_and_stats(
+    fullfile,
+    dt_ps,
+    atom_ids,
+    atom_labels,
+    actor_config,
+    kind,
+    header_start,
+    ts_outname,
+    avg_outname,
+    hist_prefix,
+    modes_outname,
+    nbins_hist=50,
+    spin_sign=1.0,
+    keep_mask=None,
+    normalize_spin_fraction=False
+):
+    """
+    Wrapper that switches to grouped analysis when an extra actor is present.
+    """
+    if actor_config is None:
+        return build_timeseries_and_stats(
+            fullfile,
+            dt_ps,
+            atom_ids,
+            kind,
+            header_start,
+            ts_outname,
+            avg_outname,
+            hist_prefix,
+            modes_outname,
+            nbins_hist=nbins_hist,
+            spin_sign=spin_sign,
+            keep_mask=keep_mask,
+            normalize_spin_fraction=normalize_spin_fraction
+        )
+
+    entities = build_analysis_entities(atom_ids, atom_labels, actor_config=actor_config)
+    return build_grouped_timeseries_and_stats(
+        fullfile,
+        dt_ps,
+        entities,
+        kind,
+        header_start,
+        ts_outname,
+        avg_outname,
+        hist_prefix,
+        modes_outname,
+        nbins_hist=nbins_hist,
+        spin_sign=spin_sign,
+        keep_mask=keep_mask,
+        normalize_spin_fraction=normalize_spin_fraction
+    )
+
+
+def write_combined_entity_timeseries(
+    entity_ids,
+    times,
+    per_entity_charge,
+    per_entity_spin,
+    spin_column_label,
+    suffix,
+    actor_config=None
+):
+    """
+    Write per-entity combined time-series files, including an optional grouped actor.
+    """
+    actor_id = actor_config["id"] if actor_config is not None else None
+    for entity_id in entity_ids:
+        q_vals = np.asarray(per_entity_charge.get(entity_id, []), dtype=float)
+
+        if times.size != q_vals.size:
+            n = min(times.size, q_vals.size)
+            t_use = times[:n]
+            q_use = q_vals[:n]
+        else:
+            t_use = times
+            q_use = q_vals
+
+        if entity_id == actor_id:
+            atom_out = f"actor_{sanitize_output_token(actor_config['label'])}_{suffix}_timeseries.dat"
+            entity_label = actor_config["label"]
+        else:
+            atom_out = f"atom_{entity_id}_{suffix}_timeseries.dat"
+            entity_label = f"atom {entity_id}"
+
+        with open(atom_out, "w") as out:
+            s_array = np.asarray(per_entity_spin.get(entity_id, []), dtype=float)
+            if s_array.size > 0:
+                if s_array.size != t_use.size:
+                    n = min(t_use.size, s_array.size)
+                    t_use = t_use[:n]
+                    q_use = q_use[:n]
+                    s_array = s_array[:n]
+                out.write(f"# time_ps  charge  {spin_column_label}\n")
+                for t, q, s in zip(t_use, q_use, s_array):
+                    out.write(f"{t: .7f} {q: .7f} {s: .7f}\n")
+            else:
+                out.write("# time_ps  charge\n")
+                for t, q in zip(t_use, q_use):
+                    out.write(f"{t: .7f} {q: .7f}\n")
+
+        print(f"[OK] Combined time series for {entity_label} written to '{atom_out}'.")
+
+
 # ==========================
 # Utility: atom list
 # ==========================
@@ -1048,6 +1557,25 @@ def parse_atom_id_list(atom_ids_str):
     return atom_ids
 
 
+def parse_global_entity_list(entity_ids_str):
+    """
+    Convert a space-separated string into global entity IDs.
+    Accept integers and the special token 'coque'.
+    """
+    entity_ids = []
+    for token in entity_ids_str.split():
+        lowered = token.lower()
+        if lowered == "coque":
+            entity_ids.append("coque")
+            continue
+        try:
+            entity_ids.append(int(token))
+        except ValueError:
+            print("Error: global selections must be atom numbers and may optionally include the token 'coque'.")
+            sys.exit(1)
+    return entity_ids
+
+
 def get_spin_representation_config(choice):
     """
     Return the configuration associated with the selected spin representation.
@@ -1184,14 +1712,14 @@ def suggest_missing_spin_atoms(
     Suggest unselected atoms that help reconcile the spin sum.
     """
     if bad_mask.size == 0 or not bad_mask.any():
-        return []
+        return [], []
 
     atom_info = get_atom_list_from_full(spin_full, header_start)
     all_atom_ids = [aid for aid, _atype in atom_info]
     atom_types = {aid: atype for aid, atype in atom_info}
     omitted_atom_ids = [aid for aid in all_atom_ids if aid not in set(selected_atom_ids)]
     if not omitted_atom_ids:
-        return []
+        return [], []
 
     times_all, all_spin_values, spin_totals = parse_frame_data(
         spin_full,
@@ -1202,7 +1730,7 @@ def suggest_missing_spin_atoms(
         spin_sign=spin_sign
     )
     if times_all.size == 0 or times_all.size != bad_mask.size:
-        return []
+        return [], []
 
     bad_values = all_spin_values[bad_mask, :]
     bad_totals = spin_totals[bad_mask]
@@ -1278,7 +1806,44 @@ def suggest_missing_spin_atoms(
             print(f"[INFO] Automatic suggestion of atoms to add: {chosen_str}")
     print(f"[OK] Missing-atom suggestions saved to '{report_outname}'.")
 
-    return suggestions
+    chosen_atom_ids = [item["atom_id"] for item in chosen]
+    return suggestions, chosen_atom_ids
+
+
+def prompt_additional_atom_selection(available_atom_ids, excluded_atom_ids=None):
+    """
+    Ask the user for atom IDs to add and validate the selection.
+    """
+    excluded_atom_ids = set(excluded_atom_ids or [])
+    atoms_str = input(
+        "Enter the atom numbers to add, separated by spaces: "
+    ).strip()
+    atom_ids = parse_atom_id_list(atoms_str)
+    if not atom_ids:
+        print("Error: no atoms were provided to add.")
+        sys.exit(1)
+
+    invalid = [aid for aid in atom_ids if aid not in available_atom_ids]
+    if invalid:
+        print(
+            "Error: these atoms are not available in the current analysis: "
+            + " ".join(str(aid) for aid in invalid)
+        )
+        sys.exit(1)
+
+    duplicates = [aid for aid in atom_ids if aid in excluded_atom_ids]
+    if duplicates:
+        print(
+            "Error: these atoms are already part of the analysis: "
+            + " ".join(str(aid) for aid in duplicates)
+        )
+        sys.exit(1)
+
+    deduped = []
+    for aid in atom_ids:
+        if aid not in deduped:
+            deduped.append(aid)
+    return deduped
 
 
 def discover_global_analysis_dirs(base_dir):
@@ -1301,6 +1866,14 @@ def discover_global_analysis_dirs(base_dir):
                 "chelpg_loewdin_histograms.png",
                 "chelpg_mulliken_histograms.png",
                 "chelpg_hirshfeld_histograms.png",
+                "qs_histograms_with_coque.png",
+                "mulliken_histograms_with_coque.png",
+                "loewdin_histograms_with_coque.png",
+                "hirshfeld_histograms_with_coque.png",
+                "chelpg_histograms_with_coque.png",
+                "chelpg_loewdin_histograms_with_coque.png",
+                "chelpg_mulliken_histograms_with_coque.png",
+                "chelpg_hirshfeld_histograms_with_coque.png",
             )
         ):
             subdirs.append(fullpath)
@@ -1337,12 +1910,19 @@ def collect_global_hist_data(base_dir, atom_map, analysis_kind):
         for aid in atom_map.get(system_name, []):
             fname = None
             for suffix in suffixes:
-                candidate = os.path.join(system_dir, f"atom_{aid}_{suffix}_timeseries.dat")
+                if aid == "coque":
+                    candidate = os.path.join(system_dir, f"actor_proposed_spin_pool_{suffix}_timeseries.dat")
+                else:
+                    candidate = os.path.join(system_dir, f"atom_{aid}_{suffix}_timeseries.dat")
                 if os.path.exists(candidate):
                     fname = candidate
                     break
             if fname is None:
-                missing.append((system_name, aid, os.path.join(system_dir, f"atom_{aid}_{suffixes[0]}_timeseries.dat")))
+                if aid == "coque":
+                    expected = os.path.join(system_dir, f"actor_proposed_spin_pool_{suffixes[0]}_timeseries.dat")
+                else:
+                    expected = os.path.join(system_dir, f"atom_{aid}_{suffixes[0]}_timeseries.dat")
+                missing.append((system_name, aid, expected))
                 continue
 
             charges, spins, spin_label = load_atom_timeseries_file(fname)
@@ -1359,6 +1939,50 @@ def collect_global_hist_data(base_dir, atom_map, analysis_kind):
             systems_data[system_name] = per_atom
 
     return systems_data, missing, spin_labels_found
+
+
+def get_global_analysis_suffixes(analysis_kind):
+    """
+    Return the filename suffixes associated with a global analysis kind.
+    """
+    suffix_map = {
+        "mulliken": ["qs"],
+        "loewdin": ["loewdin"],
+        "hirshfeld": ["hirshfeld"],
+        "chelpg": ["chelpg", "chelpg_loewdin"],
+        "chelpg_loewdin": ["chelpg_loewdin", "chelpg"],
+        "chelpg_mulliken": ["chelpg_mulliken"],
+        "chelpg_hirshfeld": ["chelpg_hirshfeld"],
+        "all": ["hirshfeld", "loewdin", "qs", "chelpg_hirshfeld", "chelpg_mulliken", "chelpg_loewdin"],
+    }
+    return suffix_map[analysis_kind]
+
+
+def infer_entities_from_previous_analysis(system_dir, analysis_kind):
+    """
+    Infer the entities selected during a previous individual analysis in one system.
+    """
+    entity_ids = []
+    for suffix in get_global_analysis_suffixes(analysis_kind):
+        found_for_suffix = []
+        pattern = os.path.join(system_dir, f"atom_*_{suffix}_timeseries.dat")
+        for fname in sorted(glob.glob(pattern)):
+            m = re.match(rf"^atom_(\d+)_{re.escape(suffix)}_timeseries\.dat$", os.path.basename(fname))
+            if m:
+                found_for_suffix.append(int(m.group(1)))
+
+        actor_fname = os.path.join(system_dir, f"actor_proposed_spin_pool_{suffix}_timeseries.dat")
+        if os.path.exists(actor_fname):
+            found_for_suffix.append("coque")
+
+        if found_for_suffix:
+            deduped = []
+            for entity_id in found_for_suffix:
+                if entity_id not in deduped:
+                    deduped.append(entity_id)
+            return deduped
+
+    return []
 
 
 def get_central_range(data_chunks, percentile=95.0):
@@ -1395,8 +2019,8 @@ def export_global_plot_data(output_dir, atom_ids, systems_data, analysis_kind, p
     ranges_out = os.path.join(output_dir, f"{analysis_kind}_global_plot_ranges.dat")
 
     with open(values_out, "w") as f_values, open(ranges_out, "w") as f_ranges:
-        f_values.write("# system atom property value\n")
-        f_ranges.write("# atom property x_min x_max n_total n_used percentile_central\n")
+        f_values.write("# system entity property value\n")
+        f_ranges.write("# entity property x_min x_max n_total n_used percentile_central\n")
 
         for aid in atom_ids:
             charge_pool = []
@@ -1430,19 +2054,43 @@ def export_global_plot_data(output_dir, atom_ids, systems_data, analysis_kind, p
                         vals_plot = vals[(vals >= xlim[0]) & (vals <= xlim[1])]
                     n_used += vals_plot.size
                     for val in vals_plot:
-                        f_values.write(f"{system_name} {aid:d} {prop} {val:.7f}\n")
+                        f_values.write(f"{system_name} {sanitize_output_token(aid)} {prop} {val:.7f}\n")
 
                 if xlim is not None:
                     f_ranges.write(
-                        f"{aid:d} {prop} {xlim[0]:.7f} {xlim[1]:.7f} {n_total:d} {n_used:d} {percentile:.1f}\n"
+                        f"{sanitize_output_token(aid)} {prop} {xlim[0]:.7f} {xlim[1]:.7f} {n_total:d} {n_used:d} {percentile:.1f}\n"
                     )
                 else:
                     f_ranges.write(
-                        f"{aid:d} {prop} nan nan {n_total:d} {n_used:d} {percentile:.1f}\n"
+                        f"{sanitize_output_token(aid)} {prop} nan nan {n_total:d} {n_used:d} {percentile:.1f}\n"
                     )
 
     print(f"[OK] Global histogram values saved to '{values_out}'.")
     print(f"[OK] Global plotting ranges saved to '{ranges_out}'.")
+
+
+def export_global_snapshot_counts(output_dir, atom_ids, systems_data, analysis_kind):
+    """
+    Export how many snapshots contribute to each per-system histogram.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    counts_out = os.path.join(output_dir, f"{analysis_kind}_global_snapshot_counts.dat")
+
+    with open(counts_out, "w") as out:
+        out.write("# system entity property n_snapshots\n")
+        for system_name in systems_data:
+            for aid in atom_ids:
+                atom_data = systems_data[system_name].get(aid)
+                if atom_data is None:
+                    continue
+                for prop in ("charge", "spin"):
+                    vals = np.asarray(atom_data.get(prop, []), dtype=float)
+                    n_snapshots = int(vals[~np.isnan(vals)].size)
+                    out.write(
+                        f"{system_name} {sanitize_output_token(aid)} {prop} {n_snapshots:d}\n"
+                    )
+
+    print(f"[OK] Global snapshot counts saved to '{counts_out}'.")
 
 
 def make_global_overlay_hist_figure(
@@ -1619,49 +2267,65 @@ def main():
         atom_selection_mode = prompt_numbered_choice(
             "Atom selection for global mode:",
             [("Same atoms for all systems", "mismos"),
-             ("Specific atoms for each system", "especificos")],
+             ("Specific atoms for each system", "especificos"),
+             ("Reuse the entities selected in each previous individual analysis", "previos")],
             default_idx=0
         )
 
         atom_map = {}
         if atom_selection_mode == "mismos":
             atom_ids_str = input(
-                "Enter atom numbers to compare, separated by spaces (for example: 88 89 90): "
+                "Enter atoms/entities to compare, separated by spaces (for example: 88 89 coque): "
             ).strip()
-            atom_ids = parse_atom_id_list(atom_ids_str)
+            atom_ids = parse_global_entity_list(atom_ids_str)
             if not atom_ids:
                 print("No atoms were provided for comparison.")
                 sys.exit(1)
             for system_name in system_names:
                 atom_map[system_name] = list(atom_ids)
-        else:
+        elif atom_selection_mode == "especificos":
             for system_name in system_names:
                 atom_ids_str = input(
-                    f"Enter atoms to compare for {system_name}, separated by spaces (Enter = skip system): "
+                    f"Enter atoms/entities to compare for {system_name}, separated by spaces (Enter = skip system; use 'coque' if available): "
                 ).strip()
                 if atom_ids_str == "":
                     atom_map[system_name] = []
                     continue
-                atom_ids = parse_atom_id_list(atom_ids_str)
+                atom_ids = parse_global_entity_list(atom_ids_str)
                 atom_map[system_name] = atom_ids
+        else:
+            for system_dir in system_dirs:
+                system_name = os.path.basename(system_dir)
+                inferred_entities = infer_entities_from_previous_analysis(system_dir, analysis_kind)
+                atom_map[system_name] = inferred_entities
+                if inferred_entities:
+                    inferred_str = " ".join(str(entity_id) for entity_id in inferred_entities)
+                    print(f"  {system_name}: reusing entities from previous analysis -> {inferred_str}")
+                else:
+                    print(f"  {system_name}: no previous individual entity selection could be inferred.")
 
-        atom_ids = sorted({aid for aids in atom_map.values() for aid in aids})
+        atom_ids = []
+        for aids in atom_map.values():
+            for aid in aids:
+                if aid not in atom_ids:
+                    atom_ids.append(aid)
         if not atom_ids:
             print("No atoms were provided for comparison.")
             sys.exit(1)
 
-        atom_labels = {aid: str(aid) for aid in atom_ids}
+        atom_labels = {aid: ("coque" if aid == "coque" else str(aid)) for aid in atom_ids}
         use_labels = prompt_numbered_choice(
             "Do you want to assign custom labels to the atoms?",
             [("No", False), ("Yes", True)],
             default_idx=0
         )
         if use_labels:
-            print("Enter a label for each atom; leave blank to use the atom number.")
-            for aid in atom_ids:
-                label = input(f"Label for atom {aid} (leave blank to use '{aid}'): ").strip()
-                if label:
-                    atom_labels[aid] = label
+                print("Enter a label for each atom; leave blank to use the atom number.")
+                for aid in atom_ids:
+                    default_label = atom_labels.get(aid, str(aid))
+                    label = input(f"Label for entity {aid} (leave blank to use '{default_label}'): ").strip()
+                    if label:
+                        atom_labels[aid] = label
 
         global_dir = os.path.join(base_dir, "global")
         os.makedirs(global_dir, exist_ok=True)
@@ -1672,6 +2336,7 @@ def main():
             analysis_kinds_to_run = [analysis_kind]
 
         generated_any = False
+        global_summary_entries = []
         for selected_analysis_kind in analysis_kinds_to_run:
             systems_data, missing, spin_labels_found = collect_global_hist_data(base_dir, atom_map, selected_analysis_kind)
             if not systems_data:
@@ -1710,13 +2375,14 @@ def main():
 
             print(f"Systems included in the plot for '{selected_analysis_kind}':")
             for system_name in systems_data:
-                atoms_for_system = " ".join(str(aid) for aid in sorted(systems_data[system_name].keys()))
+                atoms_for_system = " ".join(str(aid) for aid in systems_data[system_name].keys())
                 print(f"  {system_name}: {atoms_for_system}")
 
             if missing:
                 print(f"[WARN] Some time-series files are missing for '{selected_analysis_kind}' and were omitted from the plot:")
                 for system_name, aid, fname in missing[:20]:
-                    print(f"  {system_name}: atom {aid} -> {os.path.basename(fname)}")
+                    entity_label = "coque" if aid == "coque" else f"atom {aid}"
+                    print(f"  {system_name}: {entity_label} -> {os.path.basename(fname)}")
                 if len(missing) > 20:
                     print(f"  ... and {len(missing) - 20} more cases.")
 
@@ -1726,6 +2392,12 @@ def main():
                 systems_data,
                 selected_analysis_kind,
                 percentile=95.0
+            )
+            export_global_snapshot_counts(
+                global_dir,
+                atom_ids,
+                systems_data,
+                selected_analysis_kind
             )
 
             fig_outname = os.path.join(global_dir, f"global_{selected_analysis_kind}_histograms.png")
@@ -1739,11 +2411,20 @@ def main():
                 bins_spec=global_bins_spec,
                 percentile=95.0
             )
+            global_summary_entries.append(
+                build_global_terminal_summary_entry(
+                    get_analysis_display_label(selected_analysis_kind),
+                    systems_data,
+                    atom_ids,
+                    atom_labels,
+                )
+            )
             generated_any = True
 
         if not generated_any:
             print("Error: no compatible previous analyses were found in subdirectories of the current directory.")
             sys.exit(1)
+        print_terminal_global_summary(global_summary_entries)
         return
 
     # Select program
@@ -1963,13 +2644,16 @@ def main():
                     charge_header_line="CHELPG Charges"
                 )
 
-        if population_config["mulliken"]:
-            primary_analysis_kind = "mulliken"
-            charge_full = "mq_orca_todo.dat"
-            spin_full = "ms_orca_todo.dat" if have_spin else None
-            active_charge_header = "# Mulliken Population Analysis"
-            active_spin_header = "# Mulliken Spin Population Analysis"
-            active_charge_axis_label = "Mulliken charge"
+        # The primary analysis controls the spin-consistency check. When several
+        # analyses are enabled (for example, "All"), prefer the most robust spin
+        # partitioning available: Hirshfeld > Loewdin > Mulliken.
+        if population_config["hirshfeld"]:
+            primary_analysis_kind = "hirshfeld"
+            charge_full = "hq_orca_todo.dat"
+            spin_full = "hs_orca_todo.dat" if have_spin else None
+            active_charge_header = "# Hirshfeld Population Analysis"
+            active_spin_header = "# Hirshfeld Spin Population Analysis"
+            active_charge_axis_label = "Hirshfeld charge"
         elif population_config["loewdin"]:
             primary_analysis_kind = "loewdin"
             charge_full = "lq_orca_todo.dat"
@@ -1977,13 +2661,13 @@ def main():
             active_charge_header = "# Loewdin Population Analysis"
             active_spin_header = "# Loewdin Spin Population Analysis"
             active_charge_axis_label = "Loewdin charge"
-        elif population_config["hirshfeld"]:
-            primary_analysis_kind = "hirshfeld"
-            charge_full = "hq_orca_todo.dat"
-            spin_full = "hs_orca_todo.dat" if have_spin else None
-            active_charge_header = "# Hirshfeld Population Analysis"
-            active_spin_header = "# Hirshfeld Spin Population Analysis"
-            active_charge_axis_label = "Hirshfeld charge"
+        elif population_config["mulliken"]:
+            primary_analysis_kind = "mulliken"
+            charge_full = "mq_orca_todo.dat"
+            spin_full = "ms_orca_todo.dat" if have_spin else None
+            active_charge_header = "# Mulliken Population Analysis"
+            active_spin_header = "# Mulliken Spin Population Analysis"
+            active_charge_axis_label = "Mulliken charge"
         elif population_config["chelpg_loewdin"]:
             primary_analysis_kind = "chelpg_loewdin"
             charge_full = "cq_loewdin_orca_todo.dat"
@@ -2028,6 +2712,9 @@ def main():
 
     # Custom labels for atoms (optional)
     atom_labels = {aid: str(aid) for aid in atom_ids}
+    atom_type_map = {aid: atype for aid, atype in atoms_list} if atoms_list else {}
+    available_atom_ids = {aid for aid, _atype in atoms_list} if atoms_list else set(atom_ids)
+    actor_config = None
     use_labels = prompt_numbered_choice(
         "Do you want to assign custom labels to the atoms?",
         [("No", False), ("Yes", True)],
@@ -2085,6 +2772,7 @@ def main():
         active_spin_axis_label = spin_config["axis_label"]
 
     spin_keep_mask = None
+    terminal_summary_entries = []
     if have_spin:
         run_spin_check = prompt_numbered_choice(
             "Spin consistency check per snapshot:",
@@ -2122,7 +2810,7 @@ def main():
             )
 
             if (~spin_keep_mask).any():
-                suggest_missing_spin_atoms(
+                suggestions, auto_added_atom_ids = suggest_missing_spin_atoms(
                     spin_full,
                     dt_ps,
                     atom_ids,
@@ -2131,25 +2819,94 @@ def main():
                     spin_sign=spin_sign,
                     report_outname="spin_missing_atom_suggestions.dat"
                 )
-                filter_bad = prompt_numbered_choice(
+                resolution_mode = prompt_numbered_choice(
                     "Snapshots with poor spin consistency were detected:",
-                    [("Keep all snapshots", False),
-                     ("Remove snapshots outside the tolerance from the analysis", True)],
+                    [("Keep all snapshots", "keep_all"),
+                     ("Remove snapshots outside the tolerance from the analysis", "filter_bad"),
+                     ("Add atoms to the analysis", "add_atoms")],
                     default_idx=0
                 )
-                if not filter_bad:
+                if resolution_mode == "keep_all":
                     spin_keep_mask = None
-                elif spin_keep_mask.sum() == 0:
+                elif resolution_mode == "filter_bad":
+                    if spin_keep_mask.sum() == 0:
+                        print("Error: all snapshots were excluded by the tolerance filter.")
+                        sys.exit(1)
+                    else:
+                        n_kept = int(spin_keep_mask.sum())
+                        n_removed = int((~spin_keep_mask).sum())
+                        print(
+                            f"[INFO] Spin-consistency filtering applied: "
+                            f"{n_removed} snapshots removed, {n_kept} snapshots kept."
+                        )
+                else:
+                    add_mode_options = [("Add specific atoms manually", "manual")]
+                    if auto_added_atom_ids:
+                        add_mode_options.append(("Add the automatically suggested atoms individually", "auto_atoms"))
+                        add_mode_options.append(("Add the proposed atoms as one grouped actor", "auto_actor"))
+                    add_mode_options.append(("Cancel and keep the current atom list", "cancel"))
+
+                    add_mode = prompt_numbered_choice(
+                        "How should the analysis be expanded?",
+                        add_mode_options,
+                        default_idx=0
+                    )
+
+                    if add_mode == "manual":
+                        new_atom_ids = prompt_additional_atom_selection(
+                            available_atom_ids,
+                            excluded_atom_ids=atom_ids
+                        )
+                        atom_ids = list(atom_ids) + new_atom_ids
+                        for aid in new_atom_ids:
+                            atom_labels.setdefault(aid, str(aid))
+                        spin_keep_mask = None
+                        print(
+                            "[INFO] Added atoms to the analysis: "
+                            + ", ".join(
+                                f"{aid}({atom_type_map.get(aid, '?')})" for aid in new_atom_ids
+                            )
+                        )
+                    elif add_mode == "auto_atoms":
+                        atom_ids = list(atom_ids) + [aid for aid in auto_added_atom_ids if aid not in atom_ids]
+                        for aid in auto_added_atom_ids:
+                            atom_labels.setdefault(aid, str(aid))
+                        spin_keep_mask = None
+                        print(
+                            "[INFO] Automatically suggested atoms added to the analysis: "
+                            + ", ".join(
+                                f"{aid}({atom_type_map.get(aid, '?')})" for aid in auto_added_atom_ids
+                            )
+                        )
+                    elif add_mode == "auto_actor":
+                        actor_members = [aid for aid in auto_added_atom_ids if aid not in atom_ids]
+                        if not actor_members:
+                            print("Error: there are no suggested atoms left to build the grouped actor.")
+                            sys.exit(1)
+                        actor_label = "proposed_spin_pool"
+                        actor_config = {
+                            "id": f"actor_{sanitize_output_token(actor_label)}",
+                            "label": actor_label,
+                            "atom_ids": actor_members,
+                        }
+                        spin_keep_mask = None
+                        print(
+                            "[INFO] Grouped actor added to the analysis using atoms: "
+                            + ", ".join(
+                                f"{aid}({atom_type_map.get(aid, '?')})" for aid in actor_members
+                            )
+                        )
+                    else:
+                        spin_keep_mask = None
+                        print("[INFO] The atom list was left unchanged; all snapshots will be kept.")
+                if resolution_mode == "filter_bad" and spin_keep_mask.sum() == 0:
                     print("Error: all snapshots were excluded by the tolerance filter.")
                     sys.exit(1)
-                else:
-                    n_kept = int(spin_keep_mask.sum())
-                    n_removed = int((~spin_keep_mask).sum())
-                    print(
-                        f"[INFO] Spin-consistency filtering applied: "
-                        f"{n_removed} snapshots removed, {n_kept} snapshots kept."
-                    )
-                   
+
+    analysis_entity_ids = get_analysis_entity_ids(atom_ids, actor_config=actor_config)
+    if actor_config is not None:
+        atom_labels[actor_config["id"]] = actor_config["label"]
+    output_variant_suffix = "with_coque" if actor_config is not None else None
 
     if orca_mode and primary_analysis_kind == "mulliken":
         q_ts_out = "mulliken_charge_timeseries.dat"
@@ -2222,6 +2979,15 @@ def main():
         s_modes_out = "ms_spin_modes.dat"
         mulliken_fig_out = "qs_histograms.png"
 
+    if output_variant_suffix is not None:
+        q_ts_out = append_suffix_to_path(q_ts_out, output_variant_suffix)
+        q_avg_out = append_suffix_to_path(q_avg_out, output_variant_suffix)
+        q_modes_out = append_suffix_to_path(q_modes_out, output_variant_suffix)
+        s_ts_out = append_suffix_to_path(s_ts_out, output_variant_suffix)
+        s_avg_out = append_suffix_to_path(s_avg_out, output_variant_suffix)
+        s_modes_out = append_suffix_to_path(s_modes_out, output_variant_suffix)
+        mulliken_fig_out = append_suffix_to_path(mulliken_fig_out, output_variant_suffix)
+
     spin_column_label = spin_config["column_label"]
     spin_axis_label = spin_config["axis_label"]
     primary_spin_ylabel = active_spin_axis_label if orca_mode else spin_axis_label
@@ -2233,10 +2999,12 @@ def main():
             active_charge_axis_label if orca_mode else "charge"
         )
         # --- Charge analysis ---
-        times, per_atom_q, hist_q = build_timeseries_and_stats(
+        times, per_atom_q, hist_q = build_analysis_timeseries_and_stats(
             charge_full,
             dt_ps,
             atom_ids,
+            atom_labels,
+            actor_config,
             kind="charge",
             header_start=active_charge_header,
             ts_outname=q_ts_out,
@@ -2249,17 +3017,19 @@ def main():
 
         # --- Spin analysis, if available ---
         hist_s = {}
-        per_atom_s = {aid: np.array([]) for aid in atom_ids}
+        per_atom_s = {entity_id: np.array([]) for entity_id in analysis_entity_ids}
         if have_spin:
             mulliken_spin_mask = apply_keep_mask_or_warn(
                 spin_keep_mask,
                 parse_frame_data(spin_full, dt_ps, atom_ids, "spin", active_spin_header, spin_sign=spin_sign)[0].size,
                 "Mulliken spin" if orca_mode else "spin"
             )
-            _times_spin, per_atom_s, hist_s = build_timeseries_and_stats(
+            _times_spin, per_atom_s, hist_s = build_analysis_timeseries_and_stats(
                 spin_full,
                 dt_ps,
                 atom_ids,
+                atom_labels,
+                actor_config,
                 kind="spin",
                 header_start=active_spin_header,
                 ts_outname=s_ts_out,
@@ -2274,48 +3044,31 @@ def main():
         else:
             print("[INFO] No spin analysis was performed because no ms_*.dat files were found.")
 
-        for aid in atom_ids:
-            q_vals = np.asarray(per_atom_q.get(aid, []), dtype=float)
-            if times.size != q_vals.size:
-                n = min(times.size, q_vals.size)
-                t_use = times[:n]
-                q_use = q_vals[:n]
-            else:
-                t_use = times
-                q_use = q_vals
+        if orca_mode and primary_analysis_kind == "loewdin":
+            combined_suffix = "loewdin"
+        elif orca_mode and primary_analysis_kind == "hirshfeld":
+            combined_suffix = "hirshfeld"
+        elif orca_mode and primary_analysis_kind == "chelpg_loewdin":
+            combined_suffix = "chelpg_loewdin"
+        elif orca_mode and primary_analysis_kind == "chelpg_mulliken":
+            combined_suffix = "chelpg_mulliken"
+        elif orca_mode and primary_analysis_kind == "chelpg_hirshfeld":
+            combined_suffix = "chelpg_hirshfeld"
+        else:
+            combined_suffix = "qs"
 
-            if orca_mode and primary_analysis_kind == "loewdin":
-                atom_out = f"atom_{aid}_loewdin_timeseries.dat"
-            elif orca_mode and primary_analysis_kind == "hirshfeld":
-                atom_out = f"atom_{aid}_hirshfeld_timeseries.dat"
-            elif orca_mode and primary_analysis_kind == "chelpg_loewdin":
-                atom_out = f"atom_{aid}_chelpg_loewdin_timeseries.dat"
-            elif orca_mode and primary_analysis_kind == "chelpg_mulliken":
-                atom_out = f"atom_{aid}_chelpg_mulliken_timeseries.dat"
-            elif orca_mode and primary_analysis_kind == "chelpg_hirshfeld":
-                atom_out = f"atom_{aid}_chelpg_hirshfeld_timeseries.dat"
-            else:
-                atom_out = f"atom_{aid}_qs_timeseries.dat"
-            with open(atom_out, "w") as out:
-                s_array = np.asarray(per_atom_s.get(aid, []), dtype=float)
-                if have_spin and s_array.size > 0:
-                    if s_array.size != t_use.size:
-                        n = min(t_use.size, s_array.size)
-                        t_use = t_use[:n]
-                        q_use = q_use[:n]
-                        s_array = s_array[:n]
-                    out.write(f"# time_ps  charge  {spin_column_label}\n")
-                    for t, q, s in zip(t_use, q_use, s_array):
-                        out.write(f"{t: .7f} {q: .7f} {s: .7f}\n")
-                else:
-                    out.write("# time_ps  charge\n")
-                    for t, q in zip(t_use, q_use):
-                        out.write(f"{t: .7f} {q: .7f}\n")
-
-            print(f"[OK] Combined time series t, q, s for atom {aid} written to '{atom_out}'.")
+        write_combined_entity_timeseries(
+            analysis_entity_ids,
+            times,
+            per_atom_q,
+            per_atom_s if have_spin else {},
+            spin_column_label,
+            combined_suffix,
+            actor_config=actor_config
+        )
 
         make_combined_hist_figure(
-            atom_ids,
+            analysis_entity_ids,
             hist_charge=hist_q,
             hist_spin=hist_s if have_spin else {},
             atom_labels=atom_labels,
@@ -2338,33 +3091,47 @@ def main():
                 mulliken_ts_fig_out = "chelpg_hirshfeld_timeseries.png"
             else:
                 mulliken_ts_fig_out = "qs_timeseries.png"
+            if output_variant_suffix is not None:
+                mulliken_ts_fig_out = append_suffix_to_path(mulliken_ts_fig_out, output_variant_suffix)
             make_timeseries_figure(
                 times,
                 per_atom_q,
                 per_atom_s if have_spin else {},
-                atom_ids,
+                analysis_entity_ids,
                 atom_labels=atom_labels,
                 fig_outname=mulliken_ts_fig_out,
                 spin_ylabel=primary_spin_ylabel
             )
 
+        terminal_summary_entries.append(
+            build_terminal_summary_entry(
+                get_analysis_display_label(primary_analysis_kind if orca_mode else "mulliken"),
+                analysis_entity_ids,
+                atom_labels,
+                per_atom_q,
+                per_atom_s if have_spin else {},
+                hist_q,
+                hist_s if have_spin else {},
+            )
+        )
+
         if orca_mode and primary_analysis_kind == "mulliken" and mulliken_fig_out != "qs_histograms.png":
             make_combined_hist_figure(
-                atom_ids,
+                analysis_entity_ids,
                 hist_charge=hist_q,
                 hist_spin=hist_s if have_spin else {},
                 atom_labels=atom_labels,
                 charge_axis_label=active_charge_axis_label,
-                fig_outname="qs_histograms.png"
+                fig_outname=append_suffix_to_path("qs_histograms.png", output_variant_suffix) if output_variant_suffix is not None else "qs_histograms.png"
             )
             if make_time_plots and mulliken_ts_fig_out != "qs_timeseries.png":
                 make_timeseries_figure(
                     times,
                     per_atom_q,
                     per_atom_s if have_spin else {},
-                    atom_ids,
+                    analysis_entity_ids,
                     atom_labels=atom_labels,
-                    fig_outname="qs_timeseries.png",
+                    fig_outname=append_suffix_to_path("qs_timeseries.png", output_variant_suffix) if output_variant_suffix is not None else "qs_timeseries.png",
                     spin_ylabel=primary_spin_ylabel
                 )
 
@@ -2375,80 +3142,64 @@ def main():
             parse_frame_data("lq_orca_todo.dat", dt_ps, atom_ids, "charge", "# Loewdin Population Analysis")[0].size,
             "Loewdin charge"
         )
-        times_l, per_atom_q_l, hist_q_l = build_timeseries_and_stats(
+        times_l, per_atom_q_l, hist_q_l = build_analysis_timeseries_and_stats(
             "lq_orca_todo.dat",
             dt_ps,
             atom_ids,
+            atom_labels,
+            actor_config,
             kind="charge",
             header_start="# Loewdin Population Analysis",
-            ts_outname="loewdin_charge_timeseries.dat",
-            avg_outname="loewdin_charge_averages.dat",
+            ts_outname=append_suffix_to_path("loewdin_charge_timeseries.dat", output_variant_suffix) if output_variant_suffix is not None else "loewdin_charge_timeseries.dat",
+            avg_outname=append_suffix_to_path("loewdin_charge_averages.dat", output_variant_suffix) if output_variant_suffix is not None else "loewdin_charge_averages.dat",
             hist_prefix="loewdin_charge_hist",
-            modes_outname="loewdin_charge_modes.dat",
+            modes_outname=append_suffix_to_path("loewdin_charge_modes.dat", output_variant_suffix) if output_variant_suffix is not None else "loewdin_charge_modes.dat",
             nbins_hist=hist_bins_spec,
             keep_mask=loewdin_charge_mask
         )
 
         hist_s_l = {}
-        per_atom_s_l = {aid: np.array([]) for aid in atom_ids}
+        per_atom_s_l = {entity_id: np.array([]) for entity_id in analysis_entity_ids}
         loewdin_spin_mask = apply_keep_mask_or_warn(
             spin_keep_mask,
             parse_frame_data("ls_orca_todo.dat", dt_ps, atom_ids, "spin", "# Loewdin Spin Population Analysis", spin_sign=spin_sign)[0].size,
             "Loewdin spin"
         )
-        _times_spin_l, per_atom_s_l, hist_s_l = build_timeseries_and_stats(
+        _times_spin_l, per_atom_s_l, hist_s_l = build_analysis_timeseries_and_stats(
             "ls_orca_todo.dat",
             dt_ps,
             atom_ids,
+            atom_labels,
+            actor_config,
             kind="spin",
             header_start="# Loewdin Spin Population Analysis",
-            ts_outname="loewdin_spin_timeseries.dat",
-            avg_outname="loewdin_spin_averages.dat",
+            ts_outname=append_suffix_to_path("loewdin_spin_timeseries.dat", output_variant_suffix) if output_variant_suffix is not None else "loewdin_spin_timeseries.dat",
+            avg_outname=append_suffix_to_path("loewdin_spin_averages.dat", output_variant_suffix) if output_variant_suffix is not None else "loewdin_spin_averages.dat",
             hist_prefix="loewdin_spin_hist",
-            modes_outname="loewdin_spin_modes.dat",
+            modes_outname=append_suffix_to_path("loewdin_spin_modes.dat", output_variant_suffix) if output_variant_suffix is not None else "loewdin_spin_modes.dat",
             nbins_hist=hist_bins_spec,
             spin_sign=spin_sign,
             keep_mask=loewdin_spin_mask,
             normalize_spin_fraction=spin_config["normalize"]
         )
 
-        for aid in atom_ids:
-            q_vals = np.asarray(per_atom_q_l.get(aid, []), dtype=float)
-
-            if times_l.size != q_vals.size:
-                n = min(times_l.size, q_vals.size)
-                t_use = times_l[:n]
-                q_use = q_vals[:n]
-            else:
-                t_use = times_l
-                q_use = q_vals
-
-            atom_out = f"atom_{aid}_loewdin_timeseries.dat"
-            with open(atom_out, "w") as out:
-                s_array = np.asarray(per_atom_s_l.get(aid, []), dtype=float)
-                if s_array.size > 0:
-                    if s_array.size != t_use.size:
-                        n = min(t_use.size, s_array.size)
-                        t_use = t_use[:n]
-                        q_use = q_use[:n]
-                        s_array = s_array[:n]
-                    out.write(f"# time_ps  charge  {spin_column_label}\n")
-                    for t, q, s in zip(t_use, q_use, s_array):
-                        out.write(f"{t: .7f} {q: .7f} {s: .7f}\n")
-                else:
-                    out.write("# time_ps  charge\n")
-                    for t, q in zip(t_use, q_use):
-                        out.write(f"{t: .7f} {q: .7f}\n")
-
-            print(f"[OK] Loewdin time series for atom {aid} written to '{atom_out}'.")
+        write_combined_entity_timeseries(
+            analysis_entity_ids,
+            times_l,
+            per_atom_q_l,
+            per_atom_s_l,
+            spin_column_label,
+            "loewdin",
+            actor_config=actor_config
+        )
 
         make_combined_hist_figure(
-            atom_ids,
+            analysis_entity_ids,
             hist_charge=hist_q_l,
             hist_spin=hist_s_l,
             atom_labels=atom_labels,
             charge_axis_label="Loewdin charge",
-            fig_outname="loewdin_histograms.png"
+            fig_outname=append_suffix_to_path("loewdin_histograms.png", output_variant_suffix) if output_variant_suffix is not None else "loewdin_histograms.png"
         )
 
         if make_time_plots:
@@ -2456,11 +3207,23 @@ def main():
                 times_l,
                 per_atom_q_l,
                 per_atom_s_l,
-                atom_ids,
+                analysis_entity_ids,
                 atom_labels=atom_labels,
-                fig_outname="loewdin_timeseries.png",
+                fig_outname=append_suffix_to_path("loewdin_timeseries.png", output_variant_suffix) if output_variant_suffix is not None else "loewdin_timeseries.png",
                 spin_ylabel="Loewdin spin fraction" if spin_config["normalize"] else "Loewdin spin"
             )
+
+        terminal_summary_entries.append(
+            build_terminal_summary_entry(
+                "Loewdin",
+                analysis_entity_ids,
+                atom_labels,
+                per_atom_q_l,
+                per_atom_s_l,
+                hist_q_l,
+                hist_s_l,
+            )
+        )
 
     # --- ORCA: additional Hirshfeld analysis ---
     if orca_mode and population_config["hirshfeld"] and primary_analysis_kind != "hirshfeld":
@@ -2469,80 +3232,64 @@ def main():
             parse_frame_data("hq_orca_todo.dat", dt_ps, atom_ids, "charge", "# Hirshfeld Population Analysis")[0].size,
             "Hirshfeld charge"
         )
-        times_h, per_atom_q_h, hist_q_h = build_timeseries_and_stats(
+        times_h, per_atom_q_h, hist_q_h = build_analysis_timeseries_and_stats(
             "hq_orca_todo.dat",
             dt_ps,
             atom_ids,
+            atom_labels,
+            actor_config,
             kind="charge",
             header_start="# Hirshfeld Population Analysis",
-            ts_outname="hirshfeld_charge_timeseries.dat",
-            avg_outname="hirshfeld_charge_averages.dat",
+            ts_outname=append_suffix_to_path("hirshfeld_charge_timeseries.dat", output_variant_suffix) if output_variant_suffix is not None else "hirshfeld_charge_timeseries.dat",
+            avg_outname=append_suffix_to_path("hirshfeld_charge_averages.dat", output_variant_suffix) if output_variant_suffix is not None else "hirshfeld_charge_averages.dat",
             hist_prefix="hirshfeld_charge_hist",
-            modes_outname="hirshfeld_charge_modes.dat",
+            modes_outname=append_suffix_to_path("hirshfeld_charge_modes.dat", output_variant_suffix) if output_variant_suffix is not None else "hirshfeld_charge_modes.dat",
             nbins_hist=hist_bins_spec,
             keep_mask=hirshfeld_charge_mask
         )
 
         hist_s_h = {}
-        per_atom_s_h = {aid: np.array([]) for aid in atom_ids}
+        per_atom_s_h = {entity_id: np.array([]) for entity_id in analysis_entity_ids}
         hirshfeld_spin_mask = apply_keep_mask_or_warn(
             spin_keep_mask,
             parse_frame_data("hs_orca_todo.dat", dt_ps, atom_ids, "spin", "# Hirshfeld Spin Population Analysis", spin_sign=spin_sign)[0].size,
             "Hirshfeld spin"
         )
-        _times_spin_h, per_atom_s_h, hist_s_h = build_timeseries_and_stats(
+        _times_spin_h, per_atom_s_h, hist_s_h = build_analysis_timeseries_and_stats(
             "hs_orca_todo.dat",
             dt_ps,
             atom_ids,
+            atom_labels,
+            actor_config,
             kind="spin",
             header_start="# Hirshfeld Spin Population Analysis",
-            ts_outname="hirshfeld_spin_timeseries.dat",
-            avg_outname="hirshfeld_spin_averages.dat",
+            ts_outname=append_suffix_to_path("hirshfeld_spin_timeseries.dat", output_variant_suffix) if output_variant_suffix is not None else "hirshfeld_spin_timeseries.dat",
+            avg_outname=append_suffix_to_path("hirshfeld_spin_averages.dat", output_variant_suffix) if output_variant_suffix is not None else "hirshfeld_spin_averages.dat",
             hist_prefix="hirshfeld_spin_hist",
-            modes_outname="hirshfeld_spin_modes.dat",
+            modes_outname=append_suffix_to_path("hirshfeld_spin_modes.dat", output_variant_suffix) if output_variant_suffix is not None else "hirshfeld_spin_modes.dat",
             nbins_hist=hist_bins_spec,
             spin_sign=spin_sign,
             keep_mask=hirshfeld_spin_mask,
             normalize_spin_fraction=spin_config["normalize"]
         )
 
-        for aid in atom_ids:
-            q_vals = np.asarray(per_atom_q_h.get(aid, []), dtype=float)
-
-            if times_h.size != q_vals.size:
-                n = min(times_h.size, q_vals.size)
-                t_use = times_h[:n]
-                q_use = q_vals[:n]
-            else:
-                t_use = times_h
-                q_use = q_vals
-
-            atom_out = f"atom_{aid}_hirshfeld_timeseries.dat"
-            with open(atom_out, "w") as out:
-                s_array = np.asarray(per_atom_s_h.get(aid, []), dtype=float)
-                if s_array.size > 0:
-                    if s_array.size != t_use.size:
-                        n = min(t_use.size, s_array.size)
-                        t_use = t_use[:n]
-                        q_use = q_use[:n]
-                        s_array = s_array[:n]
-                    out.write(f"# time_ps  charge  {spin_column_label}\n")
-                    for t, q, s in zip(t_use, q_use, s_array):
-                        out.write(f"{t: .7f} {q: .7f} {s: .7f}\n")
-                else:
-                    out.write("# time_ps  charge\n")
-                    for t, q in zip(t_use, q_use):
-                        out.write(f"{t: .7f} {q: .7f}\n")
-
-            print(f"[OK] Hirshfeld time series for atom {aid} written to '{atom_out}'.")
+        write_combined_entity_timeseries(
+            analysis_entity_ids,
+            times_h,
+            per_atom_q_h,
+            per_atom_s_h,
+            spin_column_label,
+            "hirshfeld",
+            actor_config=actor_config
+        )
 
         make_combined_hist_figure(
-            atom_ids,
+            analysis_entity_ids,
             hist_charge=hist_q_h,
             hist_spin=hist_s_h,
             atom_labels=atom_labels,
             charge_axis_label="Hirshfeld charge",
-            fig_outname="hirshfeld_histograms.png"
+            fig_outname=append_suffix_to_path("hirshfeld_histograms.png", output_variant_suffix) if output_variant_suffix is not None else "hirshfeld_histograms.png"
         )
 
         if make_time_plots:
@@ -2550,11 +3297,23 @@ def main():
                 times_h,
                 per_atom_q_h,
                 per_atom_s_h,
-                atom_ids,
+                analysis_entity_ids,
                 atom_labels=atom_labels,
-                fig_outname="hirshfeld_timeseries.png",
+                fig_outname=append_suffix_to_path("hirshfeld_timeseries.png", output_variant_suffix) if output_variant_suffix is not None else "hirshfeld_timeseries.png",
                 spin_ylabel="Hirshfeld spin fraction" if spin_config["normalize"] else "Hirshfeld spin"
             )
+
+        terminal_summary_entries.append(
+            build_terminal_summary_entry(
+                "Hirshfeld",
+                analysis_entity_ids,
+                atom_labels,
+                per_atom_q_h,
+                per_atom_s_h,
+                hist_q_h,
+                hist_s_h,
+            )
+        )
 
     # --- ORCA: additional CHELPG + Loewdin analysis ---
     if orca_mode and population_config["chelpg_loewdin"] and primary_analysis_kind != "chelpg_loewdin":
@@ -2563,80 +3322,64 @@ def main():
             parse_frame_data("cq_loewdin_orca_todo.dat", dt_ps, atom_ids, "charge", "# CHELPG Population Analysis")[0].size,
             "CHELPG charge"
         )
-        times_c, per_atom_q_c, hist_q_c = build_timeseries_and_stats(
+        times_c, per_atom_q_c, hist_q_c = build_analysis_timeseries_and_stats(
             "cq_loewdin_orca_todo.dat",
             dt_ps,
             atom_ids,
+            atom_labels,
+            actor_config,
             kind="charge",
             header_start="# CHELPG Population Analysis",
-            ts_outname="chelpg_loewdin_charge_timeseries.dat",
-            avg_outname="chelpg_loewdin_charge_averages.dat",
+            ts_outname=append_suffix_to_path("chelpg_loewdin_charge_timeseries.dat", output_variant_suffix) if output_variant_suffix is not None else "chelpg_loewdin_charge_timeseries.dat",
+            avg_outname=append_suffix_to_path("chelpg_loewdin_charge_averages.dat", output_variant_suffix) if output_variant_suffix is not None else "chelpg_loewdin_charge_averages.dat",
             hist_prefix="chelpg_loewdin_charge_hist",
-            modes_outname="chelpg_loewdin_charge_modes.dat",
+            modes_outname=append_suffix_to_path("chelpg_loewdin_charge_modes.dat", output_variant_suffix) if output_variant_suffix is not None else "chelpg_loewdin_charge_modes.dat",
             nbins_hist=hist_bins_spec,
             keep_mask=chelpg_charge_mask
         )
 
         hist_s_c = {}
-        per_atom_s_c = {aid: np.array([]) for aid in atom_ids}
+        per_atom_s_c = {entity_id: np.array([]) for entity_id in analysis_entity_ids}
         chelpg_spin_mask = apply_keep_mask_or_warn(
             spin_keep_mask,
             parse_frame_data("cs_loewdin_orca_todo.dat", dt_ps, atom_ids, "spin", "# Loewdin Spin Population Analysis", spin_sign=spin_sign)[0].size,
             "Loewdin spin"
         )
-        _times_spin_c, per_atom_s_c, hist_s_c = build_timeseries_and_stats(
+        _times_spin_c, per_atom_s_c, hist_s_c = build_analysis_timeseries_and_stats(
             "cs_loewdin_orca_todo.dat",
             dt_ps,
             atom_ids,
+            atom_labels,
+            actor_config,
             kind="spin",
             header_start="# Loewdin Spin Population Analysis",
-            ts_outname="loewdin_spin_timeseries_for_chelpg_loewdin.dat",
-            avg_outname="loewdin_spin_averages_for_chelpg_loewdin.dat",
+            ts_outname=append_suffix_to_path("loewdin_spin_timeseries_for_chelpg_loewdin.dat", output_variant_suffix) if output_variant_suffix is not None else "loewdin_spin_timeseries_for_chelpg_loewdin.dat",
+            avg_outname=append_suffix_to_path("loewdin_spin_averages_for_chelpg_loewdin.dat", output_variant_suffix) if output_variant_suffix is not None else "loewdin_spin_averages_for_chelpg_loewdin.dat",
             hist_prefix="loewdin_spin_hist_for_chelpg_loewdin",
-            modes_outname="loewdin_spin_modes_for_chelpg_loewdin.dat",
+            modes_outname=append_suffix_to_path("loewdin_spin_modes_for_chelpg_loewdin.dat", output_variant_suffix) if output_variant_suffix is not None else "loewdin_spin_modes_for_chelpg_loewdin.dat",
             nbins_hist=hist_bins_spec,
             spin_sign=spin_sign,
             keep_mask=chelpg_spin_mask,
             normalize_spin_fraction=spin_config["normalize"]
         )
 
-        for aid in atom_ids:
-            q_vals = np.asarray(per_atom_q_c.get(aid, []), dtype=float)
-
-            if times_c.size != q_vals.size:
-                n = min(times_c.size, q_vals.size)
-                t_use = times_c[:n]
-                q_use = q_vals[:n]
-            else:
-                t_use = times_c
-                q_use = q_vals
-
-            atom_out = f"atom_{aid}_chelpg_loewdin_timeseries.dat"
-            with open(atom_out, "w") as out:
-                s_array = np.asarray(per_atom_s_c.get(aid, []), dtype=float)
-                if s_array.size > 0:
-                    if s_array.size != t_use.size:
-                        n = min(t_use.size, s_array.size)
-                        t_use = t_use[:n]
-                        q_use = q_use[:n]
-                        s_array = s_array[:n]
-                    out.write(f"# time_ps  charge  {spin_column_label}\n")
-                    for t, q, s in zip(t_use, q_use, s_array):
-                        out.write(f"{t: .7f} {q: .7f} {s: .7f}\n")
-                else:
-                    out.write("# time_ps  charge\n")
-                    for t, q in zip(t_use, q_use):
-                        out.write(f"{t: .7f} {q: .7f}\n")
-
-            print(f"[OK] CHELPG+Loewdin time series for atom {aid} written to '{atom_out}'.")
+        write_combined_entity_timeseries(
+            analysis_entity_ids,
+            times_c,
+            per_atom_q_c,
+            per_atom_s_c,
+            spin_column_label,
+            "chelpg_loewdin",
+            actor_config=actor_config
+        )
 
         make_combined_hist_figure(
-            atom_ids,
+            analysis_entity_ids,
             hist_charge=hist_q_c,
             hist_spin=hist_s_c,
             atom_labels=atom_labels,
             charge_axis_label="CHELPG charge",
-            fig_outname="chelpg_loewdin_histograms.png"
+            fig_outname=append_suffix_to_path("chelpg_loewdin_histograms.png", output_variant_suffix) if output_variant_suffix is not None else "chelpg_loewdin_histograms.png"
         )
 
         if make_time_plots:
@@ -2644,11 +3387,23 @@ def main():
                 times_c,
                 per_atom_q_c,
                 per_atom_s_c,
-                atom_ids,
+                analysis_entity_ids,
                 atom_labels=atom_labels,
-                fig_outname="chelpg_loewdin_timeseries.png",
+                fig_outname=append_suffix_to_path("chelpg_loewdin_timeseries.png", output_variant_suffix) if output_variant_suffix is not None else "chelpg_loewdin_timeseries.png",
                 spin_ylabel="Loewdin spin fraction" if spin_config["normalize"] else "Loewdin spin"
             )
+
+        terminal_summary_entries.append(
+            build_terminal_summary_entry(
+                "CHELPG + Loewdin",
+                analysis_entity_ids,
+                atom_labels,
+                per_atom_q_c,
+                per_atom_s_c,
+                hist_q_c,
+                hist_s_c,
+            )
+        )
 
     # --- ORCA: additional CHELPG + Mulliken analysis ---
     if orca_mode and population_config["chelpg_mulliken"] and primary_analysis_kind != "chelpg_mulliken":
@@ -2657,80 +3412,64 @@ def main():
             parse_frame_data("cq_mulliken_orca_todo.dat", dt_ps, atom_ids, "charge", "# CHELPG Population Analysis")[0].size,
             "CHELPG charge"
         )
-        times_c, per_atom_q_c, hist_q_c = build_timeseries_and_stats(
+        times_c, per_atom_q_c, hist_q_c = build_analysis_timeseries_and_stats(
             "cq_mulliken_orca_todo.dat",
             dt_ps,
             atom_ids,
+            atom_labels,
+            actor_config,
             kind="charge",
             header_start="# CHELPG Population Analysis",
-            ts_outname="chelpg_mulliken_charge_timeseries.dat",
-            avg_outname="chelpg_mulliken_charge_averages.dat",
+            ts_outname=append_suffix_to_path("chelpg_mulliken_charge_timeseries.dat", output_variant_suffix) if output_variant_suffix is not None else "chelpg_mulliken_charge_timeseries.dat",
+            avg_outname=append_suffix_to_path("chelpg_mulliken_charge_averages.dat", output_variant_suffix) if output_variant_suffix is not None else "chelpg_mulliken_charge_averages.dat",
             hist_prefix="chelpg_mulliken_charge_hist",
-            modes_outname="chelpg_mulliken_charge_modes.dat",
+            modes_outname=append_suffix_to_path("chelpg_mulliken_charge_modes.dat", output_variant_suffix) if output_variant_suffix is not None else "chelpg_mulliken_charge_modes.dat",
             nbins_hist=hist_bins_spec,
             keep_mask=chelpg_charge_mask
         )
 
         hist_s_c = {}
-        per_atom_s_c = {aid: np.array([]) for aid in atom_ids}
+        per_atom_s_c = {entity_id: np.array([]) for entity_id in analysis_entity_ids}
         chelpg_spin_mask = apply_keep_mask_or_warn(
             spin_keep_mask,
             parse_frame_data("cs_mulliken_orca_todo.dat", dt_ps, atom_ids, "spin", "# Mulliken Spin Population Analysis", spin_sign=spin_sign)[0].size,
             "Mulliken spin"
         )
-        _times_spin_c, per_atom_s_c, hist_s_c = build_timeseries_and_stats(
+        _times_spin_c, per_atom_s_c, hist_s_c = build_analysis_timeseries_and_stats(
             "cs_mulliken_orca_todo.dat",
             dt_ps,
             atom_ids,
+            atom_labels,
+            actor_config,
             kind="spin",
             header_start="# Mulliken Spin Population Analysis",
-            ts_outname="mulliken_spin_timeseries_for_chelpg_mulliken.dat",
-            avg_outname="mulliken_spin_averages_for_chelpg_mulliken.dat",
+            ts_outname=append_suffix_to_path("mulliken_spin_timeseries_for_chelpg_mulliken.dat", output_variant_suffix) if output_variant_suffix is not None else "mulliken_spin_timeseries_for_chelpg_mulliken.dat",
+            avg_outname=append_suffix_to_path("mulliken_spin_averages_for_chelpg_mulliken.dat", output_variant_suffix) if output_variant_suffix is not None else "mulliken_spin_averages_for_chelpg_mulliken.dat",
             hist_prefix="mulliken_spin_hist_for_chelpg_mulliken",
-            modes_outname="mulliken_spin_modes_for_chelpg_mulliken.dat",
+            modes_outname=append_suffix_to_path("mulliken_spin_modes_for_chelpg_mulliken.dat", output_variant_suffix) if output_variant_suffix is not None else "mulliken_spin_modes_for_chelpg_mulliken.dat",
             nbins_hist=hist_bins_spec,
             spin_sign=spin_sign,
             keep_mask=chelpg_spin_mask,
             normalize_spin_fraction=spin_config["normalize"]
         )
 
-        for aid in atom_ids:
-            q_vals = np.asarray(per_atom_q_c.get(aid, []), dtype=float)
-
-            if times_c.size != q_vals.size:
-                n = min(times_c.size, q_vals.size)
-                t_use = times_c[:n]
-                q_use = q_vals[:n]
-            else:
-                t_use = times_c
-                q_use = q_vals
-
-            atom_out = f"atom_{aid}_chelpg_mulliken_timeseries.dat"
-            with open(atom_out, "w") as out:
-                s_array = np.asarray(per_atom_s_c.get(aid, []), dtype=float)
-                if s_array.size > 0:
-                    if s_array.size != t_use.size:
-                        n = min(t_use.size, s_array.size)
-                        t_use = t_use[:n]
-                        q_use = q_use[:n]
-                        s_array = s_array[:n]
-                    out.write(f"# time_ps  charge  {spin_column_label}\n")
-                    for t, q, s in zip(t_use, q_use, s_array):
-                        out.write(f"{t: .7f} {q: .7f} {s: .7f}\n")
-                else:
-                    out.write("# time_ps  charge\n")
-                    for t, q in zip(t_use, q_use):
-                        out.write(f"{t: .7f} {q: .7f}\n")
-
-            print(f"[OK] CHELPG+Mulliken time series for atom {aid} written to '{atom_out}'.")
+        write_combined_entity_timeseries(
+            analysis_entity_ids,
+            times_c,
+            per_atom_q_c,
+            per_atom_s_c,
+            spin_column_label,
+            "chelpg_mulliken",
+            actor_config=actor_config
+        )
 
         make_combined_hist_figure(
-            atom_ids,
+            analysis_entity_ids,
             hist_charge=hist_q_c,
             hist_spin=hist_s_c,
             atom_labels=atom_labels,
             charge_axis_label="CHELPG charge",
-            fig_outname="chelpg_mulliken_histograms.png"
+            fig_outname=append_suffix_to_path("chelpg_mulliken_histograms.png", output_variant_suffix) if output_variant_suffix is not None else "chelpg_mulliken_histograms.png"
         )
 
         if make_time_plots:
@@ -2738,11 +3477,23 @@ def main():
                 times_c,
                 per_atom_q_c,
                 per_atom_s_c,
-                atom_ids,
+                analysis_entity_ids,
                 atom_labels=atom_labels,
-                fig_outname="chelpg_mulliken_timeseries.png",
+                fig_outname=append_suffix_to_path("chelpg_mulliken_timeseries.png", output_variant_suffix) if output_variant_suffix is not None else "chelpg_mulliken_timeseries.png",
                 spin_ylabel="Mulliken spin fraction" if spin_config["normalize"] else "Mulliken spin"
             )
+
+        terminal_summary_entries.append(
+            build_terminal_summary_entry(
+                "CHELPG + Mulliken",
+                analysis_entity_ids,
+                atom_labels,
+                per_atom_q_c,
+                per_atom_s_c,
+                hist_q_c,
+                hist_s_c,
+            )
+        )
 
     # --- ORCA: additional CHELPG + Hirshfeld analysis ---
     if orca_mode and population_config["chelpg_hirshfeld"] and primary_analysis_kind != "chelpg_hirshfeld":
@@ -2751,80 +3502,64 @@ def main():
             parse_frame_data("cq_hirshfeld_orca_todo.dat", dt_ps, atom_ids, "charge", "# CHELPG Population Analysis")[0].size,
             "CHELPG charge"
         )
-        times_c, per_atom_q_c, hist_q_c = build_timeseries_and_stats(
+        times_c, per_atom_q_c, hist_q_c = build_analysis_timeseries_and_stats(
             "cq_hirshfeld_orca_todo.dat",
             dt_ps,
             atom_ids,
+            atom_labels,
+            actor_config,
             kind="charge",
             header_start="# CHELPG Population Analysis",
-            ts_outname="chelpg_hirshfeld_charge_timeseries.dat",
-            avg_outname="chelpg_hirshfeld_charge_averages.dat",
+            ts_outname=append_suffix_to_path("chelpg_hirshfeld_charge_timeseries.dat", output_variant_suffix) if output_variant_suffix is not None else "chelpg_hirshfeld_charge_timeseries.dat",
+            avg_outname=append_suffix_to_path("chelpg_hirshfeld_charge_averages.dat", output_variant_suffix) if output_variant_suffix is not None else "chelpg_hirshfeld_charge_averages.dat",
             hist_prefix="chelpg_hirshfeld_charge_hist",
-            modes_outname="chelpg_hirshfeld_charge_modes.dat",
+            modes_outname=append_suffix_to_path("chelpg_hirshfeld_charge_modes.dat", output_variant_suffix) if output_variant_suffix is not None else "chelpg_hirshfeld_charge_modes.dat",
             nbins_hist=hist_bins_spec,
             keep_mask=chelpg_charge_mask
         )
 
         hist_s_c = {}
-        per_atom_s_c = {aid: np.array([]) for aid in atom_ids}
+        per_atom_s_c = {entity_id: np.array([]) for entity_id in analysis_entity_ids}
         chelpg_spin_mask = apply_keep_mask_or_warn(
             spin_keep_mask,
             parse_frame_data("cs_hirshfeld_orca_todo.dat", dt_ps, atom_ids, "spin", "# Hirshfeld Spin Population Analysis", spin_sign=spin_sign)[0].size,
             "Hirshfeld spin"
         )
-        _times_spin_c, per_atom_s_c, hist_s_c = build_timeseries_and_stats(
+        _times_spin_c, per_atom_s_c, hist_s_c = build_analysis_timeseries_and_stats(
             "cs_hirshfeld_orca_todo.dat",
             dt_ps,
             atom_ids,
+            atom_labels,
+            actor_config,
             kind="spin",
             header_start="# Hirshfeld Spin Population Analysis",
-            ts_outname="hirshfeld_spin_timeseries_for_chelpg_hirshfeld.dat",
-            avg_outname="hirshfeld_spin_averages_for_chelpg_hirshfeld.dat",
+            ts_outname=append_suffix_to_path("hirshfeld_spin_timeseries_for_chelpg_hirshfeld.dat", output_variant_suffix) if output_variant_suffix is not None else "hirshfeld_spin_timeseries_for_chelpg_hirshfeld.dat",
+            avg_outname=append_suffix_to_path("hirshfeld_spin_averages_for_chelpg_hirshfeld.dat", output_variant_suffix) if output_variant_suffix is not None else "hirshfeld_spin_averages_for_chelpg_hirshfeld.dat",
             hist_prefix="hirshfeld_spin_hist_for_chelpg_hirshfeld",
-            modes_outname="hirshfeld_spin_modes_for_chelpg_hirshfeld.dat",
+            modes_outname=append_suffix_to_path("hirshfeld_spin_modes_for_chelpg_hirshfeld.dat", output_variant_suffix) if output_variant_suffix is not None else "hirshfeld_spin_modes_for_chelpg_hirshfeld.dat",
             nbins_hist=hist_bins_spec,
             spin_sign=spin_sign,
             keep_mask=chelpg_spin_mask,
             normalize_spin_fraction=spin_config["normalize"]
         )
 
-        for aid in atom_ids:
-            q_vals = np.asarray(per_atom_q_c.get(aid, []), dtype=float)
-
-            if times_c.size != q_vals.size:
-                n = min(times_c.size, q_vals.size)
-                t_use = times_c[:n]
-                q_use = q_vals[:n]
-            else:
-                t_use = times_c
-                q_use = q_vals
-
-            atom_out = f"atom_{aid}_chelpg_hirshfeld_timeseries.dat"
-            with open(atom_out, "w") as out:
-                s_array = np.asarray(per_atom_s_c.get(aid, []), dtype=float)
-                if s_array.size > 0:
-                    if s_array.size != t_use.size:
-                        n = min(t_use.size, s_array.size)
-                        t_use = t_use[:n]
-                        q_use = q_use[:n]
-                        s_array = s_array[:n]
-                    out.write(f"# time_ps  charge  {spin_column_label}\n")
-                    for t, q, s in zip(t_use, q_use, s_array):
-                        out.write(f"{t: .7f} {q: .7f} {s: .7f}\n")
-                else:
-                    out.write("# time_ps  charge\n")
-                    for t, q in zip(t_use, q_use):
-                        out.write(f"{t: .7f} {q: .7f}\n")
-
-            print(f"[OK] CHELPG+Hirshfeld time series for atom {aid} written to '{atom_out}'.")
+        write_combined_entity_timeseries(
+            analysis_entity_ids,
+            times_c,
+            per_atom_q_c,
+            per_atom_s_c,
+            spin_column_label,
+            "chelpg_hirshfeld",
+            actor_config=actor_config
+        )
 
         make_combined_hist_figure(
-            atom_ids,
+            analysis_entity_ids,
             hist_charge=hist_q_c,
             hist_spin=hist_s_c,
             atom_labels=atom_labels,
             charge_axis_label="CHELPG charge",
-            fig_outname="chelpg_hirshfeld_histograms.png"
+            fig_outname=append_suffix_to_path("chelpg_hirshfeld_histograms.png", output_variant_suffix) if output_variant_suffix is not None else "chelpg_hirshfeld_histograms.png"
         )
 
         if make_time_plots:
@@ -2832,12 +3567,30 @@ def main():
                 times_c,
                 per_atom_q_c,
                 per_atom_s_c,
-                atom_ids,
+                analysis_entity_ids,
                 atom_labels=atom_labels,
-                fig_outname="chelpg_hirshfeld_timeseries.png",
+                fig_outname=append_suffix_to_path("chelpg_hirshfeld_timeseries.png", output_variant_suffix) if output_variant_suffix is not None else "chelpg_hirshfeld_timeseries.png",
                 spin_ylabel="Hirshfeld spin fraction" if spin_config["normalize"] else "Hirshfeld spin"
             )
 
+        terminal_summary_entries.append(
+            build_terminal_summary_entry(
+                "CHELPG + Hirshfeld",
+                analysis_entity_ids,
+                atom_labels,
+                per_atom_q_c,
+                per_atom_s_c,
+                hist_q_c,
+                hist_s_c,
+            )
+        )
+
+    print_terminal_analysis_summary(terminal_summary_entries)
+
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nchau :(")
+        sys.exit(130)
