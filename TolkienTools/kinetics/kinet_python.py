@@ -46,11 +46,16 @@ Modelos cineticos disponibles:
         dB/dt =  k1 A - (k_1 + k2) B
         dC/dt =  k2 B
 
-Hay dos metodos de ajuste:
+Hay tres metodos de ajuste:
 
     nnls       Metodo por defecto. Para cada k calcula C(t), ajusta E por
                minimos cuadrados no negativos y minimiza ||A_exp - E C||.
                Impone la condicion fisica E(lambda) >= 0.
+
+    pinv       Para cada k calcula C(t), ajusta E por minimos cuadrados
+               sin restricciones usando pseudoinversa y minimiza
+               ||A_exp - E C||. Permite comparar contra el ajuste directo
+               sin imponer E(lambda) >= 0.
 
     factor     Reproduce la logica original de MATLAB en el espacio de SVD.
                Es util para comparar contra las rutinas viejas, pero puede
@@ -707,7 +712,8 @@ def print_exploration_message() -> None:
     print("An exploratory figure will open next.")
     print("Use it to inspect the raw spectra, choose a baseline region,")
     print("identify spectra to discard, choose a wavelength range,")
-    print("and estimate the number of colored species from diag(S).")
+    print("estimate the number of colored species from diag(S),")
+    print("and choose how pure spectra will be estimated during the fit.")
     print("Close the figure window to continue with the questions.")
     print()
 
@@ -853,18 +859,21 @@ def factor_space_error(k: float, t: np.ndarray, w: np.ndarray, c0: float) -> flo
     return np.linalg.norm(diff[:, 0]) + np.linalg.norm(diff[:, 1])
 
 
-def fit_nonnegative_spectra(
+def fit_direct_spectra(
     absorbance: np.ndarray,
     c: np.ndarray,
+    spectra_method: str,
     initial_spectrum_weight: float = 0.0,
 ) -> np.ndarray:
-    """Fit nonnegative pure spectra for fixed concentration profiles.
+    """Fit pure spectra for fixed concentration profiles.
 
     For fixed C(t), each wavelength is an independent least-squares problem:
 
         A_exp(lambda, :) ~= E(lambda, :) @ C
 
-    nnls enforces E(lambda, species) >= 0.
+    With spectra_method="nnls", E(lambda, species) >= 0 is enforced.
+    With spectra_method="pinv", the unconstrained pseudoinverse solution is
+    used and negative spectrum values are allowed.
 
     If initial_spectrum_weight > 0, add a soft penalty that keeps the pure
     spectrum of species A close to the first measured spectrum. The weight is
@@ -872,6 +881,8 @@ def fit_nonnegative_spectra(
     """
     if initial_spectrum_weight < 0:
         raise ValueError("--initial-spectrum-weight must be nonnegative")
+    if spectra_method not in {"nnls", "pinv"}:
+        raise ValueError(f"Unknown direct spectra method: {spectra_method}")
 
     design = c.T
     target = absorbance
@@ -886,21 +897,40 @@ def fit_nonnegative_spectra(
             ]
         )
 
+    if spectra_method == "pinv":
+        return (np.linalg.pinv(design) @ target.T).T
+
     spectra = np.empty((absorbance.shape[0], c.shape[0]))
     for i, row in enumerate(target):
         spectra[i, :], _ = nnls(design, row)
     return spectra
 
 
-def direct_nonnegative_error_for_concentrations(
+def fit_nonnegative_spectra(
+    absorbance: np.ndarray,
+    c: np.ndarray,
+    initial_spectrum_weight: float = 0.0,
+) -> np.ndarray:
+    """Fit nonnegative pure spectra for fixed concentration profiles."""
+    return fit_direct_spectra(
+        absorbance,
+        c,
+        spectra_method="nnls",
+        initial_spectrum_weight=initial_spectrum_weight,
+    )
+
+
+def direct_spectral_error_for_concentrations(
     c: np.ndarray,
     experiment: Experiment,
+    spectra_method: str,
     initial_spectrum_weight: float = 0.0,
 ) -> float:
     """Objective function for a fixed concentration matrix."""
-    spectra = fit_nonnegative_spectra(
+    spectra = fit_direct_spectra(
         experiment.absorbance,
         c,
+        spectra_method=spectra_method,
         initial_spectrum_weight=initial_spectrum_weight,
     )
     residuals = experiment.absorbance - spectra @ c
@@ -909,6 +939,40 @@ def direct_nonnegative_error_for_concentrations(
         initial_mismatch = c[0, 0] * spectra[:, 0] - experiment.absorbance[:, 0]
         error_squared += initial_spectrum_weight * float(np.sum(initial_mismatch**2))
     return float(np.sqrt(error_squared))
+
+
+def direct_nonnegative_error_for_concentrations(
+    c: np.ndarray,
+    experiment: Experiment,
+    initial_spectrum_weight: float = 0.0,
+) -> float:
+    """Objective function for a fixed concentration matrix using NNLS."""
+    return direct_spectral_error_for_concentrations(
+        c,
+        experiment,
+        spectra_method="nnls",
+        initial_spectrum_weight=initial_spectrum_weight,
+    )
+
+
+def direct_spectral_error(
+    k: float,
+    experiment: Experiment,
+    c0: float,
+    spectra_method: str,
+    initial_spectrum_weight: float = 0.0,
+) -> float:
+    """Objective function for the A -> B direct spectral fit."""
+    if k <= 0:
+        return np.inf
+
+    c = concentration_profile_a_to_b(experiment.t, k, c0=c0)
+    return direct_spectral_error_for_concentrations(
+        c,
+        experiment,
+        spectra_method=spectra_method,
+        initial_spectrum_weight=initial_spectrum_weight,
+    )
 
 
 def direct_nonnegative_error(
@@ -1101,6 +1165,62 @@ def fit_a_to_b_nnls(
     )
 
 
+def fit_a_to_b_direct(
+    experiment: Experiment,
+    c0: float = 1.0,
+    n_components: int = 2,
+    k_bounds: tuple[float, float] = (1e-8, 1e-1),
+    spectra_method: str = "nnls",
+    initial_spectrum_weight: float = 0.0,
+) -> FitResult:
+    """Fit A -> B by direct reconstruction with NNLS or pseudoinverse spectra."""
+    q, w, singular_values = factor_analysis(experiment.absorbance, n_components)
+
+    if n_components != 2:
+        raise ValueError("The A -> B direct spectral fit requires exactly 2 components.")
+
+    k = optimize_k(
+        lambda trial_k: direct_spectral_error(
+            trial_k,
+            experiment,
+            c0,
+            spectra_method=spectra_method,
+            initial_spectrum_weight=initial_spectrum_weight,
+        ),
+        k_bounds,
+    )
+    c = concentration_profile_a_to_b(experiment.t, k, c0=c0)
+    spectra = fit_direct_spectra(
+        experiment.absorbance,
+        c,
+        spectra_method=spectra_method,
+        initial_spectrum_weight=initial_spectrum_weight,
+    )
+    absorbance_calc = spectra @ c
+    residuals = experiment.absorbance - absorbance_calc
+    error = direct_spectral_error_for_concentrations(
+        c,
+        experiment,
+        spectra_method=spectra_method,
+        initial_spectrum_weight=initial_spectrum_weight,
+    )
+
+    return FitResult(
+        method=spectra_method,
+        model="a_to_b",
+        params={"k": k},
+        species_labels=MODEL_SPECIES["a_to_b"],
+        c=c,
+        spectra=spectra,
+        absorbance_calc=absorbance_calc,
+        residuals=residuals,
+        singular_values=singular_values,
+        q=q,
+        w=w,
+        error=error,
+    )
+
+
 def fit_a_to_b(
     experiment: Experiment,
     c0: float = 1.0,
@@ -1110,12 +1230,13 @@ def fit_a_to_b(
     initial_spectrum_weight: float = 0.0,
 ) -> FitResult:
     """Dispatch between available A -> B fitting methods."""
-    if method == "nnls":
-        return fit_a_to_b_nnls(
+    if method in {"nnls", "pinv"}:
+        return fit_a_to_b_direct(
             experiment,
             c0=c0,
             n_components=n_components,
             k_bounds=k_bounds,
+            spectra_method=method,
             initial_spectrum_weight=initial_spectrum_weight,
         )
     if method == "factor":
@@ -1128,18 +1249,19 @@ def fit_a_to_b(
     raise ValueError(f"Unknown fit method: {method}")
 
 
-def fit_a_to_b_to_c_nnls(
+def fit_a_to_b_to_c_direct(
     experiment: Experiment,
     c0: float = 1.0,
     n_components: int = 3,
     k_bounds: tuple[float, float] = (1e-8, 1e-1),
+    spectra_method: str = "nnls",
     initial_spectrum_weight: float = 0.0,
 ) -> FitResult:
-    """Fit A -> B -> C by direct reconstruction with nonnegative spectra."""
+    """Fit A -> B -> C by direct reconstruction with NNLS or pseudoinverse spectra."""
     q, w, singular_values = factor_analysis(experiment.absorbance, n_components)
 
     if n_components != 3:
-        raise ValueError("The A -> B -> C NNLS fit requires exactly 3 components.")
+        raise ValueError("The A -> B -> C direct spectral fit requires exactly 3 components.")
 
     def objective(params: dict[str, float]) -> float:
         c = concentration_profile_a_to_b_to_c(
@@ -1148,9 +1270,10 @@ def fit_a_to_b_to_c_nnls(
             params["k2"],
             c0=c0,
         )
-        return direct_nonnegative_error_for_concentrations(
+        return direct_spectral_error_for_concentrations(
             c,
             experiment,
+            spectra_method=spectra_method,
             initial_spectrum_weight=initial_spectrum_weight,
         )
 
@@ -1165,24 +1288,116 @@ def fit_a_to_b_to_c_nnls(
         params["k2"],
         c0=c0,
     )
-    spectra = fit_nonnegative_spectra(
+    spectra = fit_direct_spectra(
         experiment.absorbance,
         c,
+        spectra_method=spectra_method,
         initial_spectrum_weight=initial_spectrum_weight,
     )
     absorbance_calc = spectra @ c
     residuals = experiment.absorbance - absorbance_calc
-    error = direct_nonnegative_error_for_concentrations(
+    error = direct_spectral_error_for_concentrations(
         c,
         experiment,
+        spectra_method=spectra_method,
         initial_spectrum_weight=initial_spectrum_weight,
     )
 
     return FitResult(
-        method="nnls",
+        method=spectra_method,
         model="a_to_b_to_c",
         params=params,
         species_labels=MODEL_SPECIES["a_to_b_to_c"],
+        c=c,
+        spectra=spectra,
+        absorbance_calc=absorbance_calc,
+        residuals=residuals,
+        singular_values=singular_values,
+        q=q,
+        w=w,
+        error=error,
+    )
+
+
+def fit_a_to_b_to_c_nnls(
+    experiment: Experiment,
+    c0: float = 1.0,
+    n_components: int = 3,
+    k_bounds: tuple[float, float] = (1e-8, 1e-1),
+    initial_spectrum_weight: float = 0.0,
+) -> FitResult:
+    """Fit A -> B -> C by direct reconstruction with nonnegative spectra."""
+    return fit_a_to_b_to_c_direct(
+        experiment,
+        c0=c0,
+        n_components=n_components,
+        k_bounds=k_bounds,
+        spectra_method="nnls",
+        initial_spectrum_weight=initial_spectrum_weight,
+    )
+
+
+def fit_a_rev_b_to_c_direct(
+    experiment: Experiment,
+    c0: float = 1.0,
+    n_components: int = 3,
+    k_bounds: tuple[float, float] = (1e-8, 1e-1),
+    spectra_method: str = "nnls",
+    initial_spectrum_weight: float = 0.0,
+) -> FitResult:
+    """Fit A <-> B -> C by direct reconstruction with NNLS or pseudoinverse spectra."""
+    q, w, singular_values = factor_analysis(experiment.absorbance, n_components)
+
+    if n_components != 3:
+        raise ValueError("The A <-> B -> C direct spectral fit requires exactly 3 components.")
+
+    def objective(params: dict[str, float]) -> float:
+        c = concentration_profile_a_rev_b_to_c(
+            experiment.t,
+            params["k1"],
+            params["k_1"],
+            params["k2"],
+            c0=c0,
+        )
+        return direct_spectral_error_for_concentrations(
+            c,
+            experiment,
+            spectra_method=spectra_method,
+            initial_spectrum_weight=initial_spectrum_weight,
+        )
+
+    params = optimize_kinetic_parameters(
+        objective,
+        ("k1", "k_1", "k2"),
+        k_bounds,
+    )
+    c = concentration_profile_a_rev_b_to_c(
+        experiment.t,
+        params["k1"],
+        params["k_1"],
+        params["k2"],
+        c0=c0,
+    )
+    spectra = fit_direct_spectra(
+        experiment.absorbance,
+        c,
+        spectra_method=spectra_method,
+        initial_spectrum_weight=initial_spectrum_weight,
+    )
+    absorbance_calc = spectra @ c
+    residuals = experiment.absorbance - absorbance_calc
+    error = direct_spectral_error_for_concentrations(
+        c,
+        experiment,
+        spectra_method=spectra_method,
+        initial_spectrum_weight=initial_spectrum_weight,
+    )
+
+    return FitResult(
+        method=spectra_method,
+        model="a_rev_b_to_c",
+        params=params,
+        species_labels=MODEL_SPECIES["a_rev_b_to_c"],
         c=c,
         spectra=spectra,
         absorbance_calc=absorbance_calc,
@@ -1202,63 +1417,13 @@ def fit_a_rev_b_to_c_nnls(
     initial_spectrum_weight: float = 0.0,
 ) -> FitResult:
     """Fit A <-> B -> C by direct reconstruction with nonnegative spectra."""
-    q, w, singular_values = factor_analysis(experiment.absorbance, n_components)
-
-    if n_components != 3:
-        raise ValueError("The A <-> B -> C NNLS fit requires exactly 3 components.")
-
-    def objective(params: dict[str, float]) -> float:
-        c = concentration_profile_a_rev_b_to_c(
-            experiment.t,
-            params["k1"],
-            params["k_1"],
-            params["k2"],
-            c0=c0,
-        )
-        return direct_nonnegative_error_for_concentrations(
-            c,
-            experiment,
-            initial_spectrum_weight=initial_spectrum_weight,
-        )
-
-    params = optimize_kinetic_parameters(
-        objective,
-        ("k1", "k_1", "k2"),
-        k_bounds,
-    )
-    c = concentration_profile_a_rev_b_to_c(
-        experiment.t,
-        params["k1"],
-        params["k_1"],
-        params["k2"],
-        c0=c0,
-    )
-    spectra = fit_nonnegative_spectra(
-        experiment.absorbance,
-        c,
-        initial_spectrum_weight=initial_spectrum_weight,
-    )
-    absorbance_calc = spectra @ c
-    residuals = experiment.absorbance - absorbance_calc
-    error = direct_nonnegative_error_for_concentrations(
-        c,
+    return fit_a_rev_b_to_c_direct(
         experiment,
+        c0=c0,
+        n_components=n_components,
+        k_bounds=k_bounds,
+        spectra_method="nnls",
         initial_spectrum_weight=initial_spectrum_weight,
-    )
-
-    return FitResult(
-        method="nnls",
-        model="a_rev_b_to_c",
-        params=params,
-        species_labels=MODEL_SPECIES["a_rev_b_to_c"],
-        c=c,
-        spectra=spectra,
-        absorbance_calc=absorbance_calc,
-        residuals=residuals,
-        singular_values=singular_values,
-        q=q,
-        w=w,
-        error=error,
     )
 
 
@@ -1274,8 +1439,10 @@ def fit_model(
     """Fit the selected kinetic model."""
     if initial_spectrum_weight < 0:
         raise ValueError("--initial-spectrum-weight must be nonnegative")
-    if initial_spectrum_weight > 0 and method != "nnls":
-        raise ValueError("--initial-spectrum-weight is available only with --fit-method nnls")
+    if initial_spectrum_weight > 0 and method == "factor":
+        raise ValueError(
+            "--initial-spectrum-weight is available only with --fit-method nnls or pinv"
+        )
 
     if model == "a_to_b":
         return fit_a_to_b(
@@ -1287,23 +1454,25 @@ def fit_model(
             initial_spectrum_weight=initial_spectrum_weight,
         )
     if model == "a_rev_b_to_c":
-        if method != "nnls":
-            raise ValueError("A <-> B -> C is currently implemented only for --fit-method nnls")
-        return fit_a_rev_b_to_c_nnls(
+        if method == "factor":
+            raise ValueError("A <-> B -> C is currently implemented only for --fit-method nnls or pinv")
+        return fit_a_rev_b_to_c_direct(
             experiment,
             c0=c0,
             n_components=n_components,
             k_bounds=k_bounds,
+            spectra_method=method,
             initial_spectrum_weight=initial_spectrum_weight,
         )
     if model == "a_to_b_to_c":
-        if method != "nnls":
-            raise ValueError("A -> B -> C is currently implemented only for --fit-method nnls")
-        return fit_a_to_b_to_c_nnls(
+        if method == "factor":
+            raise ValueError("A -> B -> C is currently implemented only for --fit-method nnls or pinv")
+        return fit_a_to_b_to_c_direct(
             experiment,
             c0=c0,
             n_components=n_components,
             k_bounds=k_bounds,
+            spectra_method=method,
             initial_spectrum_weight=initial_spectrum_weight,
         )
     raise ValueError(f"Unknown kinetic model: {model}")
@@ -1352,6 +1521,44 @@ def ask_model_choice(default_model: str) -> str:
         raise ValueError(f"Model choice must be between 1 and {len(model_keys)}")
 
     return model_keys[index - 1]
+
+
+def ask_fit_method_choice(default_method: str, model: str) -> str:
+    """Ask how pure spectra should be estimated during fitting."""
+    if default_method not in {"nnls", "pinv", "factor"}:
+        raise ValueError(f"Unknown fit method: {default_method}")
+
+    direct_methods = [
+        ("nnls", "NNLS: espectros no negativos E(lambda) >= 0"),
+        ("pinv", "Pseudoinversa: minimos cuadrados sin restricciones"),
+    ]
+    available_methods = direct_methods.copy()
+    if model == "a_to_b" and default_method == "factor":
+        available_methods.append(
+            ("factor", "Factor/SVD: compatibilidad con la rutina MATLAB original")
+        )
+
+    if default_method == "factor" and model != "a_to_b":
+        default_method = "nnls"
+
+    print()
+    print("Metodo para obtener los espectros puros en cada prueba cinetica:")
+    for i, (key, label) in enumerate(available_methods, start=1):
+        suffix = " [default]" if key == default_method else ""
+        print(f"  {i}. {label}{suffix}")
+
+    choice = input("Elegir metodo? Enter = default: ").strip().lower()
+    if not choice:
+        return default_method
+
+    for i, (key, _) in enumerate(available_methods, start=1):
+        if choice == str(i) or choice == key:
+            return key
+
+    raise ValueError(
+        "Fit method choice must be one of: "
+        + ", ".join(key for key, _ in available_methods)
+    )
 
 
 def is_near_bound(value: float, bound: float) -> bool:
@@ -1614,9 +1821,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--fit-method",
-        choices=("nnls", "factor"),
+        choices=("nnls", "pinv", "factor"),
         default="nnls",
-        help="nnls enforces nonnegative spectra; factor reproduces the MATLAB factor-space fit",
+        help=(
+            "nnls enforces nonnegative spectra; pinv uses unconstrained "
+            "pseudoinverse spectra; factor reproduces the MATLAB factor-space fit"
+        ),
     )
     parser.add_argument(
         "--initial-spectrum-weight",
@@ -1834,10 +2044,12 @@ def main() -> None:
     experiment = read_experiment(input_path)
 
     model = args.model
+    fit_method = args.fit_method
     if not args.no_plot and not args.skip_preprocess_dialog:
         print_exploration_message()
         plot_experiment_overview(experiment)
         model = ask_model_choice(args.model)
+        fit_method = ask_fit_method_choice(args.fit_method, model)
 
     corrected, work_range, c0, reaction_start_time = preprocess_experiment(args, experiment)
     cropped = crop_wavelengths(corrected, work_range[0], work_range[1])
@@ -1850,7 +2062,7 @@ def main() -> None:
         cropped,
         c0=c0,
         n_components=n_components,
-        method=args.fit_method,
+        method=fit_method,
         k_bounds=(args.k_min, args.k_max),
         auto_expand=args.auto_expand_k_max,
         expand_factor=args.k_max_expand_factor,

@@ -1,0 +1,2 @@
+"""Tolkien Tools launcher package."""
+
