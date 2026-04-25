@@ -94,8 +94,21 @@ def extract_absorbance(data: bytes, blocks: list[tuple[int, int]]) -> np.ndarray
     return spectra
 
 
-def extract_times(data: bytes, expected_count: int) -> np.ndarray:
-    """Extract RelTime values from the KD file."""
+def extract_times(
+    data: bytes,
+    blocks: list[tuple[int, int]],
+) -> np.ndarray:
+    """Extract one RelTime value associated with each spectrum block.
+
+    Some KD files contain extra literal "RelTime" strings inside object
+    metadata. Counting every occurrence globally can therefore produce more
+    RelTime fields than spectra. The robust association is block-local: each
+    spectrum's time metadata appears after its data payload and before the next
+    spectrum block.
+    """
+    if not blocks:
+        raise ValueError("No spectrum blocks were found")
+
     positions: list[int] = []
     pos = 0
     while True:
@@ -105,16 +118,24 @@ def extract_times(data: bytes, expected_count: int) -> np.ndarray:
         positions.append(marker_pos)
         pos = marker_pos + 1
 
-    if len(positions) != expected_count:
-        raise ValueError(
-            f"Found {len(positions)} RelTime fields but {expected_count} spectra"
-        )
+    times: list[float] = []
+    for index, (data_start, n_points) in enumerate(blocks):
+        spectrum_end = data_start + n_points * 8
+        next_block_start = blocks[index + 1][0] if index + 1 < len(blocks) else len(data)
+        block_positions = [
+            position
+            for position in positions
+            if spectrum_end < position < next_block_start
+        ]
+        if not block_positions:
+            raise ValueError(f"Could not find RelTime for spectrum {index + 1}")
 
-    times = np.array([read_float64_le(data, p + 21) for p in positions])
-    if not np.all(np.isfinite(times)):
-        raise ValueError("Some RelTime values are not finite")
+        time = read_float64_le(data, block_positions[0] + 21)
+        if not np.isfinite(time):
+            raise ValueError(f"RelTime for spectrum {index + 1} is not finite")
+        times.append(time)
 
-    return times
+    return np.array(times)
 
 
 def infer_wavelength_axis(
@@ -183,7 +204,7 @@ def convert_kd(
     data = input_path.read_bytes()
     blocks = find_spectrum_blocks(data)
     absorbance = extract_absorbance(data, blocks)
-    times = extract_times(data, expected_count=absorbance.shape[1])
+    times = extract_times(data, blocks)
     wavelength = infer_wavelength_axis(
         data,
         first_data_start=blocks[0][0],

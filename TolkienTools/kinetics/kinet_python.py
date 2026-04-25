@@ -507,8 +507,25 @@ def plot_time_colored_spectra(
 
 def add_spectrum_hover_labels(ax, experiment: Experiment) -> None:
     """Add hover labels that identify the nearest spectrum line."""
-    y_min = float(np.nanmin(experiment.absorbance))
-    y_max = float(np.nanmax(experiment.absorbance))
+    add_matrix_hover_labels(
+        ax,
+        x=experiment.wavelength,
+        y_matrix=experiment.absorbance,
+        times=experiment.t,
+        value_label=None,
+    )
+
+
+def add_matrix_hover_labels(
+    ax,
+    x: np.ndarray,
+    y_matrix: np.ndarray,
+    times: np.ndarray,
+    value_label: str | None = None,
+) -> None:
+    """Add hover labels that identify the nearest column trace."""
+    y_min = float(np.nanmin(y_matrix))
+    y_max = float(np.nanmax(y_matrix))
     y_tolerance = max((y_max - y_min) * 0.025, 1e-12)
 
     annotation = ax.annotate(
@@ -527,8 +544,8 @@ def add_spectrum_hover_labels(ax, experiment: Experiment) -> None:
             ax.figure.canvas.draw_idle()
             return
 
-        wavelength_index = int(np.argmin(np.abs(experiment.wavelength - event.xdata)))
-        y_values = experiment.absorbance[wavelength_index, :]
+        wavelength_index = int(np.argmin(np.abs(x - event.xdata)))
+        y_values = y_matrix[wavelength_index, :]
         spectrum_index = int(np.argmin(np.abs(y_values - event.ydata)))
         y_nearest = float(y_values[spectrum_index])
 
@@ -537,12 +554,15 @@ def add_spectrum_hover_labels(ax, experiment: Experiment) -> None:
             ax.figure.canvas.draw_idle()
             return
 
-        x_nearest = float(experiment.wavelength[wavelength_index])
+        x_nearest = float(x[wavelength_index])
         annotation.xy = (x_nearest, y_nearest)
-        annotation.set_text(
-            f"Spectrum {spectrum_index + 1}\n"
-            f"t = {experiment.t[spectrum_index]:.6g}"
-        )
+        lines = [
+            f"Spectrum {spectrum_index + 1}",
+            f"t = {times[spectrum_index]:.6g}",
+        ]
+        if value_label is not None:
+            lines.append(f"{value_label} = {y_nearest:.6g}")
+        annotation.set_text("\n".join(lines))
         annotation.set_visible(True)
         ax.figure.canvas.draw_idle()
 
@@ -714,12 +734,16 @@ def print_exploration_message() -> None:
     print("identify spectra to discard, choose a wavelength range,")
     print("estimate the number of colored species from diag(S),")
     print("and choose how pure spectra will be estimated during the fit.")
+    print("The same figure includes an automatic baseline-correction preview.")
     print("Close the figure window to continue with the questions.")
     print()
 
 
-def plot_experiment_overview(experiment: Experiment) -> None:
-    """Show raw spectra and singular values before preprocessing choices."""
+def plot_experiment_overview(
+    experiment: Experiment,
+    baseline_window: float,
+) -> None:
+    """Show raw spectra, baseline preview and singular values before choices."""
     import sys
 
     import matplotlib.pyplot as plt
@@ -729,13 +753,17 @@ def plot_experiment_overview(experiment: Experiment) -> None:
         min(experiment.absorbance.shape),
     )
 
-    fig, (ax_spectra, ax_singular) = plt.subplots(
-        1,
+    fig, axes = plt.subplots(
         2,
-        figsize=(14, 5),
+        2,
+        figsize=(15, 9),
         constrained_layout=True,
     )
     fig.suptitle("Experiment overview before preprocessing")
+    ax_spectra = axes[0, 0]
+    ax_baseline = axes[0, 1]
+    ax_singular = axes[1, 0]
+    ax_empty = axes[1, 1]
 
     plot_time_colored_spectra(
         experiment,
@@ -744,11 +772,67 @@ def plot_experiment_overview(experiment: Experiment) -> None:
         show_hover_labels=True,
     )
 
+    try:
+        auto_region = suggest_auto_baseline_region(
+            experiment,
+            window_width=baseline_window,
+        )
+        corrected = Experiment(
+            t=experiment.t,
+            wavelength=experiment.wavelength,
+            absorbance=baseline_correct_region(
+                experiment,
+                auto_region[0],
+                auto_region[1],
+            ),
+        )
+        plot_time_colored_spectra(
+            corrected,
+            (
+                "Automatic baseline preview "
+                f"({auto_region[0]:g}-{auto_region[1]:g} nm)"
+            ),
+            ax=ax_baseline,
+            show_hover_labels=True,
+        )
+        ax_baseline.axvspan(
+            auto_region[0],
+            auto_region[1],
+            color="0.85",
+            alpha=0.45,
+            zorder=0,
+        )
+    except ValueError as exc:
+        ax_baseline.text(
+            0.5,
+            0.5,
+            f"Automatic baseline preview unavailable:\n{exc}",
+            ha="center",
+            va="center",
+            transform=ax_baseline.transAxes,
+        )
+        ax_baseline.set_axis_off()
+
     component_indices = np.arange(1, singular_values.size + 1)
     ax_singular.plot(component_indices, singular_values, marker="o", linestyle="none")
     ax_singular.set_xlabel("Component index")
     ax_singular.set_ylabel("Singular value")
     ax_singular.set_title("Factor analysis: diag(S)")
+
+    ax_empty.text(
+        0.0,
+        1.0,
+        "Use this overview to choose:\n"
+        "- spectra to discard\n"
+        "- reaction start time\n"
+        "- baseline correction mode/region\n"
+        "- wavelength range for the fit\n\n"
+        "Hover over spectra in the spectral panels to read spectrum number and time.",
+        ha="left",
+        va="top",
+        transform=ax_empty.transAxes,
+    )
+    ax_empty.set_axis_off()
 
     sys.stdout.flush()
     plt.show()
@@ -786,6 +870,156 @@ def plot_baseline_comparison(
             alpha=0.45,
             zorder=0,
         )
+
+    sys.stdout.flush()
+    plt.show()
+
+
+def corrected_absorbance_from_baseline_choice(
+    experiment: Experiment,
+    baseline_mode: str,
+    baseline_region: tuple[float, float] | None,
+    baseline_points: int,
+    baseline_window: float,
+) -> tuple[np.ndarray, tuple[float, float] | None]:
+    """Apply the selected baseline correction and return the region used."""
+    if baseline_mode == "none":
+        return experiment.absorbance.copy(), baseline_region
+    if baseline_mode == "points":
+        return baseline_correct(experiment.absorbance, baseline_points), baseline_region
+    if baseline_mode == "auto-flat":
+        baseline_region = suggest_auto_baseline_region(
+            experiment,
+            window_width=baseline_window,
+        )
+        print(
+            "Automatic baseline region: "
+            f"{baseline_region[0]:g}-{baseline_region[1]:g} nm"
+        )
+        return (
+            baseline_correct_region(
+                experiment,
+                baseline_region[0],
+                baseline_region[1],
+            ),
+            baseline_region,
+        )
+    if baseline_mode == "region":
+        if baseline_region is None:
+            raise ValueError("Baseline mode 'region' requires a baseline region")
+        return (
+            baseline_correct_region(
+                experiment,
+                baseline_region[0],
+                baseline_region[1],
+            ),
+            baseline_region,
+        )
+    raise ValueError(f"Unknown baseline mode: {baseline_mode}")
+
+
+def apply_preprocessing_choices(
+    args: argparse.Namespace,
+    experiment: Experiment,
+    drop_indices: list[int],
+    reaction_start_time: float | None,
+    baseline_mode: str,
+    baseline_region: tuple[float, float] | None,
+    baseline_points: int,
+    work_range: tuple[float, float],
+) -> tuple[Experiment, Experiment, tuple[float, float] | None]:
+    """Apply spectrum/time pruning, baseline correction and wavelength crop."""
+    pruned = drop_spectra(experiment, drop_indices)
+    pruned = start_reaction_at_time(pruned, reaction_start_time)
+    corrected_absorbance, used_region = corrected_absorbance_from_baseline_choice(
+        pruned,
+        baseline_mode,
+        baseline_region,
+        baseline_points,
+        args.baseline_window,
+    )
+    corrected = Experiment(
+        t=pruned.t,
+        wavelength=pruned.wavelength,
+        absorbance=corrected_absorbance,
+    )
+    cropped = crop_wavelengths(corrected, work_range[0], work_range[1])
+    return corrected, cropped, used_region
+
+
+def plot_preprocessed_experiment_preview(
+    corrected: Experiment,
+    cropped: Experiment,
+    work_range: tuple[float, float],
+    baseline_mode: str,
+    baseline_region: tuple[float, float] | None,
+    baseline_points: int,
+    reaction_start_time: float | None,
+) -> None:
+    """Show the spectra that will be passed to the kinetic fit."""
+    import sys
+
+    import matplotlib.pyplot as plt
+
+    _, _, singular_values = factor_analysis(
+        cropped.absorbance,
+        min(cropped.absorbance.shape),
+    )
+
+    fig, axes = plt.subplots(
+        1,
+        3,
+        figsize=(17, 5),
+        constrained_layout=True,
+    )
+    baseline_text = baseline_mode
+    if baseline_region is not None:
+        baseline_text += f" {baseline_region[0]:g}-{baseline_region[1]:g} nm"
+    elif baseline_mode == "points":
+        baseline_text += f" last {baseline_points} points"
+    if reaction_start_time is None:
+        start_text = "no reaction-start cut"
+    else:
+        start_text = f"t_start = {reaction_start_time:g}"
+    fig.suptitle(
+        "Preprocessed spectra proposed for fitting | "
+        f"baseline: {baseline_text} | {start_text}"
+    )
+
+    plot_time_colored_spectra(
+        corrected,
+        "After baseline correction",
+        ax=axes[0],
+        show_hover_labels=True,
+    )
+    axes[0].axvspan(
+        work_range[0],
+        work_range[1],
+        color="0.9",
+        alpha=0.35,
+        zorder=0,
+    )
+    if baseline_region is not None:
+        axes[0].axvspan(
+            baseline_region[0],
+            baseline_region[1],
+            color="tab:blue",
+            alpha=0.12,
+            zorder=0,
+        )
+
+    plot_time_colored_spectra(
+        cropped,
+        "Final spectra used for fit",
+        ax=axes[1],
+        show_hover_labels=True,
+    )
+
+    component_indices = np.arange(1, singular_values.size + 1)
+    axes[2].plot(component_indices, singular_values, marker="o", linestyle="none")
+    axes[2].set_xlabel("Component index")
+    axes[2].set_ylabel("Singular value")
+    axes[2].set_title("diag(S) after preprocessing")
 
     sys.stdout.flush()
     plt.show()
@@ -1639,6 +1873,8 @@ def plot_result(
     experiment: Experiment,
     result: FitResult,
     input_filename: str | None = None,
+    save_path: Path | None = None,
+    show: bool = True,
 ) -> None:
     """Create diagnostic plots for visual inspection of the fit."""
     import matplotlib.pyplot as plt
@@ -1708,10 +1944,25 @@ def plot_result(
     ax_conc.legend()
 
     ax_residuals = axes["residuals"]
-    ax_residuals.plot(experiment.wavelength, result.residuals)
+    residual_colors = time_gradient_colors(experiment.t.size)
+    for j, color in enumerate(residual_colors):
+        ax_residuals.plot(
+            experiment.wavelength,
+            result.residuals[:, j],
+            color=color,
+            linewidth=0.45,
+            alpha=0.9,
+        )
     ax_residuals.set_xlabel("Wavelength")
     ax_residuals.set_ylabel("Residual absorbance")
     ax_residuals.set_title("Residuals")
+    add_matrix_hover_labels(
+        ax_residuals,
+        x=experiment.wavelength,
+        y_matrix=result.residuals,
+        times=experiment.t,
+        value_label="residual",
+    )
 
     ax_singular = axes["singular"]
     component_indices = np.arange(1, result.singular_values.size + 1)
@@ -1720,7 +1971,210 @@ def plot_result(
     ax_singular.set_ylabel("Singular value")
     ax_singular.set_title("Singular values")
 
-    plt.show()
+    if save_path is not None:
+        fig.savefig(save_path, dpi=300)
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+
+def print_fit_report(
+    input_path: Path,
+    experiment: Experiment,
+    result: FitResult,
+    final_k_bounds: tuple[float, float],
+    args: argparse.Namespace,
+    c0: float,
+    reaction_start_time: float | None,
+    model: str,
+) -> None:
+    """Print the numerical summary for one fit."""
+    k_min, k_max = final_k_bounds
+
+    print(f"Input file: {input_path}")
+    print(
+        "Data matrix: "
+        f"{experiment.absorbance.shape[0]} wavelengths x "
+        f"{experiment.absorbance.shape[1]} times"
+    )
+    print(f"Wavelength range: {experiment.wavelength[0]:g} - {experiment.wavelength[-1]:g}")
+    print(f"Time range: {experiment.t[0]:g} - {experiment.t[-1]:g}")
+    if reaction_start_time is not None:
+        print(f"reaction start time: {reaction_start_time:g} original time units")
+    print(f"c0: {c0:g} M")
+    print(f"model: {MODEL_LABELS[model]}")
+    print(f"fit method: {result.method}")
+    if args.initial_spectrum_weight > 0:
+        print(f"initial spectrum weight: {args.initial_spectrum_weight:g}")
+    if k_max == args.k_max:
+        print(f"k search range: {k_min:g} - {k_max:g}")
+    else:
+        print(f"k search range: {k_min:g} - {k_max:g} (expanded from {args.k_max:g})")
+    for name, value in result.params.items():
+        print(f"{PARAMETER_LABELS.get(name, name)}: {value:.10g}")
+        if is_near_bound(value, k_min):
+            print(
+                "  warning: "
+                f"{PARAMETER_LABELS.get(name, name)} reached the lower search bound"
+            )
+        elif is_near_bound(value, k_max):
+            print(
+                "  warning: "
+                f"{PARAMETER_LABELS.get(name, name)} reached the upper search bound"
+            )
+    if set(result.params) == {"k"}:
+        print(f"half-life: {np.log(2) / result.params['k']:.10g}")
+    print(f"fit error: {result.error:.10g}")
+    print(f"minimum recovered spectrum value: {result.spectra.min():.10g}")
+    print("first singular values:", " ".join(f"{x:.6g}" for x in result.singular_values[:10]))
+    print()
+
+
+def ask_post_fit_spectra_to_drop(experiment: Experiment) -> list[int] | None:
+    """Ask whether to remove spectra after inspecting the final residuals panel."""
+    while True:
+        print("Los indices son los que aparecen en el tooltip del panel de residuos.")
+        choice = input(
+            "Espectros a eliminar y recalcular? "
+            "Ej: 3 o 3,7-9. Enter/n = terminar: "
+        ).strip()
+        normalized = choice.lower()
+        if normalized in {"", "n", "no", "fin", "q", "quit", "salir"}:
+            return None
+
+        try:
+            drop_indices = parse_spectrum_selection(choice, experiment.t.size)
+        except ValueError as exc:
+            print(f"Seleccion invalida: {exc}")
+            continue
+
+        if not drop_indices:
+            return None
+        if experiment.t.size - len(drop_indices) < 2:
+            print("Deben quedar al menos 2 espectros para recalcular.")
+            continue
+        return drop_indices
+
+
+def output_prefix_from_input(path: Path) -> Path:
+    """Return the file prefix used for exported fit artifacts."""
+    output_dir = path.parent if str(path.parent) else Path(".")
+    return output_dir / path.stem
+
+
+def write_fit_summary_dat(
+    path: Path,
+    source_input_path: Path,
+    analysis_input_path: Path,
+    experiment: Experiment,
+    result: FitResult,
+    final_k_bounds: tuple[float, float],
+    args: argparse.Namespace,
+    c0: float,
+    reaction_start_time: float | None,
+    model: str,
+) -> None:
+    """Write a tab-separated summary of the final accepted fit."""
+    k_min, k_max = final_k_bounds
+    lines = [
+        "# key\tvalue",
+        f"source_file\t{source_input_path}",
+        f"analysis_file\t{analysis_input_path}",
+        f"model\t{MODEL_LABELS[model]}",
+        f"fit_method\t{result.method}",
+        f"c0_M\t{c0:.10g}",
+        f"n_wavelengths\t{experiment.wavelength.size}",
+        f"n_spectra\t{experiment.t.size}",
+        f"wavelength_min\t{experiment.wavelength[0]:.10g}",
+        f"wavelength_max\t{experiment.wavelength[-1]:.10g}",
+        f"time_min\t{experiment.t[0]:.10g}",
+        f"time_max\t{experiment.t[-1]:.10g}",
+        f"fit_error\t{result.error:.10g}",
+        f"minimum_recovered_spectrum_value\t{result.spectra.min():.10g}",
+        f"k_search_min\t{k_min:.10g}",
+        f"k_search_max\t{k_max:.10g}",
+    ]
+    if reaction_start_time is not None:
+        lines.append(f"reaction_start_time_original_units\t{reaction_start_time:.10g}")
+    if args.initial_spectrum_weight > 0:
+        lines.append(f"initial_spectrum_weight\t{args.initial_spectrum_weight:.10g}")
+    for name, value in result.params.items():
+        lines.append(f"{PARAMETER_LABELS.get(name, name)}\t{value:.10g}")
+    if set(result.params) == {"k"}:
+        lines.append(f"half_life\t{np.log(2) / result.params['k']:.10g}")
+    lines.append("species\t" + ",".join(result.species_labels))
+    lines.append(
+        "singular_values\t"
+        + ",".join(f"{value:.10g}" for value in result.singular_values)
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def export_final_fit_outputs(
+    source_input_path: Path,
+    analysis_input_path: Path,
+    experiment: Experiment,
+    result: FitResult,
+    final_k_bounds: tuple[float, float],
+    args: argparse.Namespace,
+    c0: float,
+    reaction_start_time: float | None,
+    model: str,
+) -> None:
+    """Save final fit outputs for external plotting and reporting."""
+    prefix = output_prefix_from_input(source_input_path)
+    concentration_path = prefix.with_name(f"{prefix.name}_concentrations.dat")
+    spectra_path = prefix.with_name(f"{prefix.name}_pure_spectra.dat")
+    summary_path = prefix.with_name(f"{prefix.name}_fit_summary.dat")
+    panel_path = prefix.with_name(f"{prefix.name}_fit_panel.png")
+
+    concentration_table = np.column_stack((experiment.t, result.c.T))
+    concentration_header = "\t".join(("time", *result.species_labels))
+    np.savetxt(
+        concentration_path,
+        concentration_table,
+        delimiter="\t",
+        header=concentration_header,
+        comments="# ",
+    )
+
+    spectra_table = np.column_stack((experiment.wavelength, result.spectra))
+    spectra_header = "\t".join(("wavelength", *result.species_labels))
+    np.savetxt(
+        spectra_path,
+        spectra_table,
+        delimiter="\t",
+        header=spectra_header,
+        comments="# ",
+    )
+
+    write_fit_summary_dat(
+        summary_path,
+        source_input_path,
+        analysis_input_path,
+        experiment,
+        result,
+        final_k_bounds,
+        args,
+        c0,
+        reaction_start_time,
+        model,
+    )
+    plot_result(
+        experiment,
+        result,
+        input_filename=source_input_path.name,
+        save_path=panel_path,
+        show=False,
+    )
+
+    print("Archivos exportados:")
+    print(f"  {concentration_path}")
+    print(f"  {spectra_path}")
+    print(f"  {summary_path}")
+    print(f"  {panel_path}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1896,22 +2350,11 @@ def ask_preprocessing_choices(
         dropped,
         window_width=baseline_window,
     )
-    auto_corrected = Experiment(
-        t=dropped.t,
-        wavelength=dropped.wavelength,
-        absorbance=baseline_correct_region(dropped, auto_region[0], auto_region[1]),
-    )
-
     print()
     print(
         "Automatic baseline suggestion: "
         f"{auto_region[0]:g}-{auto_region[1]:g} nm"
     )
-    print("A comparison figure will open next.")
-    print("Close it to accept the suggestion or choose another option.")
-    print()
-    plot_baseline_comparison(dropped, auto_corrected, auto_region)
-
     print("Baseline correction options:")
     print(f"  1. Accept automatic region {auto_region[0]:g}-{auto_region[1]:g} nm")
     print("  2. Type a manual wavelength range, e.g. 760-820")
@@ -1979,7 +2422,20 @@ def preprocess_experiment(
             sorted((args.baseline_lambda_min, args.baseline_lambda_max))
         )
 
-    if not args.no_plot and not args.skip_preprocess_dialog:
+    if args.no_plot or args.skip_preprocess_dialog:
+        corrected, _, _ = apply_preprocessing_choices(
+            args,
+            experiment,
+            drop_indices,
+            reaction_start_time,
+            baseline_mode,
+            baseline_region,
+            baseline_points,
+            work_range,
+        )
+        return corrected, work_range, c0, reaction_start_time
+
+    while True:
         (
             drop_indices,
             reaction_start_time,
@@ -1992,47 +2448,40 @@ def preprocess_experiment(
             experiment,
             baseline_points,
             default_work_range=work_range,
-            default_c0=args.c0,
+            default_c0=c0,
             baseline_window=args.baseline_window,
-            default_reaction_start_time=args.reaction_start_time,
+            default_reaction_start_time=reaction_start_time,
         )
-
-    experiment = drop_spectra(experiment, drop_indices)
-    experiment = start_reaction_at_time(experiment, reaction_start_time)
-
-    if baseline_mode == "none":
-        corrected_absorbance = experiment.absorbance.copy()
-    elif baseline_mode == "points":
-        corrected_absorbance = baseline_correct(
-            experiment.absorbance, baseline_points
-        )
-    elif baseline_mode == "auto-flat":
-        baseline_region = suggest_auto_baseline_region(
+        corrected, cropped, used_region = apply_preprocessing_choices(
+            args,
             experiment,
-            window_width=args.baseline_window,
+            drop_indices,
+            reaction_start_time,
+            baseline_mode,
+            baseline_region,
+            baseline_points,
+            work_range,
         )
-        print(
-            "Automatic baseline region: "
-            f"{baseline_region[0]:g}-{baseline_region[1]:g} nm"
+        plot_preprocessed_experiment_preview(
+            corrected,
+            cropped,
+            work_range,
+            baseline_mode,
+            used_region,
+            baseline_points,
+            reaction_start_time,
         )
-        corrected_absorbance = baseline_correct_region(
-            experiment, baseline_region[0], baseline_region[1]
-        )
-    elif baseline_mode == "region":
-        if baseline_region is None:
-            raise ValueError("Baseline mode 'region' requires a baseline region")
-        corrected_absorbance = baseline_correct_region(
-            experiment, baseline_region[0], baseline_region[1]
-        )
-    else:
-        raise ValueError(f"Unknown baseline mode: {baseline_mode}")
-
-    corrected = Experiment(
-        t=experiment.t,
-        wavelength=experiment.wavelength,
-        absorbance=corrected_absorbance,
-    )
-    return corrected, work_range, c0, reaction_start_time
+        approve = input(
+            "Aprobar estos espectros para el ajuste? "
+            "Enter/s = si, n = volver a elegir poda/baseline/rango: "
+        ).strip().lower()
+        if approve in {"", "s", "si", "sí", "y", "yes"}:
+            return corrected, work_range, c0, reaction_start_time
+        if approve in {"n", "no"}:
+            print()
+            print("Volviendo a las opciones de preprocesado.")
+            continue
+        raise ValueError("Approval choice must be yes or no")
 
 
 def main() -> None:
@@ -2040,6 +2489,7 @@ def main() -> None:
     args = build_parser().parse_args()
 
     print_startup_banner()
+    source_input_path = Path(args.input)
     input_path = resolve_input_file(args)
     experiment = read_experiment(input_path)
 
@@ -2047,7 +2497,10 @@ def main() -> None:
     fit_method = args.fit_method
     if not args.no_plot and not args.skip_preprocess_dialog:
         print_exploration_message()
-        plot_experiment_overview(experiment)
+        plot_experiment_overview(
+            experiment,
+            baseline_window=args.baseline_window,
+        )
         model = ask_model_choice(args.model)
         fit_method = ask_fit_method_choice(args.fit_method, model)
 
@@ -2057,49 +2510,59 @@ def main() -> None:
     if n_components is None:
         n_components = len(MODEL_SPECIES[model])
 
-    result, final_k_bounds = fit_model_with_auto_k_max(
+    fit_experiment = cropped
+    while True:
+        result, final_k_bounds = fit_model_with_auto_k_max(
+            model,
+            fit_experiment,
+            c0=c0,
+            n_components=n_components,
+            method=fit_method,
+            k_bounds=(args.k_min, args.k_max),
+            auto_expand=args.auto_expand_k_max,
+            expand_factor=args.k_max_expand_factor,
+            max_expand_steps=args.k_max_expand_steps,
+            initial_spectrum_weight=args.initial_spectrum_weight,
+        )
+
+        print_fit_report(
+            input_path,
+            fit_experiment,
+            result,
+            final_k_bounds,
+            args,
+            c0,
+            reaction_start_time,
+            model,
+        )
+
+        if args.no_plot:
+            break
+
+        plot_result(fit_experiment, result, input_filename=input_path.name)
+        drop_indices = ask_post_fit_spectra_to_drop(fit_experiment)
+        if drop_indices is None:
+            break
+
+        removed = ", ".join(
+            f"{index + 1} (t={fit_experiment.t[index]:.6g})"
+            for index in drop_indices
+        )
+        print(f"Recalculando sin espectros: {removed}")
+        print()
+        fit_experiment = drop_spectra(fit_experiment, drop_indices)
+
+    export_final_fit_outputs(
+        source_input_path,
+        input_path,
+        fit_experiment,
+        result,
+        final_k_bounds,
+        args,
+        c0,
+        reaction_start_time,
         model,
-        cropped,
-        c0=c0,
-        n_components=n_components,
-        method=fit_method,
-        k_bounds=(args.k_min, args.k_max),
-        auto_expand=args.auto_expand_k_max,
-        expand_factor=args.k_max_expand_factor,
-        max_expand_steps=args.k_max_expand_steps,
-        initial_spectrum_weight=args.initial_spectrum_weight,
     )
-    k_min, k_max = final_k_bounds
-
-    print(f"Input file: {input_path}")
-    print(f"Data matrix: {cropped.absorbance.shape[0]} wavelengths x {cropped.absorbance.shape[1]} times")
-    print(f"Wavelength range: {cropped.wavelength[0]:g} - {cropped.wavelength[-1]:g}")
-    print(f"Time range: {cropped.t[0]:g} - {cropped.t[-1]:g}")
-    if reaction_start_time is not None:
-        print(f"reaction start time: {reaction_start_time:g} original time units")
-    print(f"c0: {c0:g} M")
-    print(f"model: {MODEL_LABELS[model]}")
-    print(f"fit method: {result.method}")
-    if args.initial_spectrum_weight > 0:
-        print(f"initial spectrum weight: {args.initial_spectrum_weight:g}")
-    if k_max == args.k_max:
-        print(f"k search range: {k_min:g} - {k_max:g}")
-    else:
-        print(f"k search range: {k_min:g} - {k_max:g} (expanded from {args.k_max:g})")
-    for name, value in result.params.items():
-        print(f"{PARAMETER_LABELS.get(name, name)}: {value:.10g}")
-        if is_near_bound(value, k_min):
-            print(f"  warning: {PARAMETER_LABELS.get(name, name)} reached the lower search bound")
-        elif is_near_bound(value, k_max):
-            print(f"  warning: {PARAMETER_LABELS.get(name, name)} reached the upper search bound")
-    if set(result.params) == {"k"}:
-        print(f"half-life: {np.log(2) / result.params['k']:.10g}")
-    print(f"fit error: {result.error:.10g}")
-    print(f"minimum recovered spectrum value: {result.spectra.min():.10g}")
-    print("first singular values:", " ".join(f"{x:.6g}" for x in result.singular_values[:10]))
-
-    if not args.no_plot:
-        plot_result(cropped, result, input_filename=input_path.name)
 
 
 if __name__ == "__main__":
