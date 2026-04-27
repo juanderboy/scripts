@@ -15,9 +15,6 @@ tolkien-tools
 Este modulo contiene la rutina de cineticas experimentales multilambda y el
 conversor `kd_to_txt.py`.
 
-Por ahora `kinet/` conserva datos de prueba, archivos `.KD/.txt` y scripts
-MATLAB historicos.
-
 ## Organizacion interna
 
 `kinet_python.py` se mantiene como punto de entrada compatible con llamadas
