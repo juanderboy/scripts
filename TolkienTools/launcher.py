@@ -42,6 +42,50 @@ TOOLS = (
 )
 
 
+REQUIREMENTS_GUIDE = """\
+Requisitos para instalar y correr Tolkien Tools
+
+Base comun:
+  - Python 3.10 o superior.
+  - Paquetes Python:
+      numpy
+      scipy
+      matplotlib
+  - En Ubuntu/Debian se pueden instalar con:
+      python3 -m pip install numpy scipy matplotlib
+    o, si se prefiere usar paquetes del sistema:
+      sudo apt install python3 python3-numpy python3-scipy python3-matplotlib
+
+Programas externos:
+  - No hace falta tener ORCA ni LIO instalados para ejecutar Tolkien Tools.
+    Las rutinas leen archivos ya generados por esos programas.
+  - Para abrir automaticamente reportes HTML desde TD-DFT, son utiles
+    xdg-open en Linux o wslview en WSL. Si no estan, el HTML igual se genera
+    y se puede abrir manualmente.
+
+Archivos esperados por rutina:
+  1. TD-DFT spectra
+     - Lee salidas TD-DFT de ORCA, normalmente archivos TD_*.out.
+     - Usa numpy, scipy.signal.find_peaks y matplotlib.
+     - Puede generar PNG, CSV/DAT y un HTML interactivo.
+
+  2. Charge and spin analysis
+     - Modo LIO: lee series mq_*.dat y, si existen, ms_*.dat.
+     - Modo ORCA: lee archivos <prefijo>_N.out o <prefijo>_N.dat con tablas
+       Mulliken, Loewdin, Hirshfeld y/o CHELPG.
+     - Usa numpy, scipy.stats.gaussian_kde, scipy.signal.find_peaks y
+       matplotlib.
+
+  3. Multilambda kinetics
+     - Lee tablas espectrofotometricas lambda x tiempo en .txt/.csv estilo
+       semicolon, y puede convertir archivos .KD.
+     - Usa numpy, scipy.optimize, scipy.optimize.nnls y matplotlib.
+
+Chequeo rapido:
+  python3 -c "import numpy, scipy, matplotlib; print('OK')"
+"""
+
+
 def print_banner() -> None:
     width = 74
     lines = [
@@ -58,15 +102,24 @@ def print_banner() -> None:
     print()
 
 
+def print_requirements_guide() -> None:
+    print()
+    print(REQUIREMENTS_GUIDE)
+
+
 def prompt_tool_choice() -> Tool | None:
     print("Que queres hacer?")
     for index, tool in enumerate(TOOLS, start=1):
         print(f"  {index}. {tool.name}")
         print(f"     {tool.description}")
+    print("  i. Instructivo de instalacion y dependencias")
     print("  0. Salir")
     print()
 
     choice = input("Elegir opcion: ").strip()
+    if choice.lower() in {"i", "info", "deps", "dependencias", "requirements", "requisitos"}:
+        print_requirements_guide()
+        return prompt_tool_choice()
     if choice in {"", "0", "q", "quit", "salir"}:
         return None
     if not choice.isdigit():
@@ -101,9 +154,23 @@ def tool_from_cli_choice(choice: str) -> Tool:
     if normalized not in aliases:
         raise ValueError(
             "La opcion debe ser 1, 2 o 3 "
-            "(tambien se aceptan aliases como td, charges o kinetics)."
+            "(tambien se aceptan aliases como td, charges o kinetics). "
+            "Para dependencias usa: requirements, deps o requisitos."
         )
     return TOOLS[aliases[normalized]]
+
+
+def is_requirements_choice(choice: str) -> bool:
+    return choice.strip().lower() in {
+        "i",
+        "info",
+        "deps",
+        "dependencias",
+        "requirements",
+        "requisitos",
+        "--requirements",
+        "--deps",
+    }
 
 
 def prompt_extra_args(tool: Tool) -> list[str]:
@@ -143,6 +210,9 @@ def main() -> int:
     print_banner()
     try:
         if len(sys.argv) > 1:
+            if is_requirements_choice(sys.argv[1]):
+                print_requirements_guide()
+                return 0
             tool = tool_from_cli_choice(sys.argv[1])
             args = sys.argv[2:]
         else:
