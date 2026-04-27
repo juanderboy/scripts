@@ -20,7 +20,7 @@ def print_startup_banner() -> None:
     """Print the program title and short description."""
     width = 72
     lines = [
-        "TolKinet",
+        "TOLKinetics",
         "Multiwavelength kinetic analysis",
         "Factor analysis and global fitting of spectral time series",
         "vibecoded by Tolkien, 2026",
