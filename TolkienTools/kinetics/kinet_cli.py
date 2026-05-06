@@ -12,6 +12,12 @@ from kinet_common import MODEL_LABELS, MODEL_SPECIES, PARAMETER_LABELS
 from kinet_export import export_final_fit_outputs
 from kinet_fitting import fit_model_with_auto_k_max, is_near_bound
 from kinet_io import read_experiment, resolve_input_file
+from kinet_known_spectra import (
+    KnownSpectrumSpec,
+    build_known_spectra_matrix,
+    known_spectra_wavelength_range,
+    parse_known_spectrum_spec,
+)
 from kinet_plotting import plot_experiment_overview, plot_result, print_exploration_message
 from kinet_preprocessing import crop_wavelengths, drop_spectra, parse_spectrum_selection, preprocess_experiment
 
@@ -63,7 +69,11 @@ def ask_model_choice(default_model: str) -> str:
 
 
 
-def ask_fit_method_choice(default_method: str, model: str) -> str:
+def ask_fit_method_choice(
+    default_method: str,
+    model: str,
+    has_known_spectra: bool = False,
+) -> str:
     """Ask how pure spectra should be estimated during fitting."""
     if default_method not in {"nnls", "pinv", "factor"}:
         raise ValueError(f"Unknown fit method: {default_method}")
@@ -73,12 +83,14 @@ def ask_fit_method_choice(default_method: str, model: str) -> str:
         ("pinv", "Pseudoinversa: minimos cuadrados sin restricciones"),
     ]
     available_methods = direct_methods.copy()
-    if model in {"a_to_b", "a_to_b_to_c", "a_rev_b_to_c"}:
+    if model in {"a_to_b", "a_to_b_to_c", "a_rev_b_to_c"} and not has_known_spectra:
         available_methods.append(
             ("factor", "Factor/SVD: ajuste en el espacio de factores")
         )
 
-    if default_method == "factor" and model not in {"a_to_b", "a_to_b_to_c", "a_rev_b_to_c"}:
+    if default_method == "factor" and (
+        has_known_spectra or model not in {"a_to_b", "a_to_b_to_c", "a_rev_b_to_c"}
+    ):
         default_method = "nnls"
 
     print()
@@ -99,6 +111,77 @@ def ask_fit_method_choice(default_method: str, model: str) -> str:
         "Fit method choice must be one of: "
         + ", ".join(key for key, _ in available_methods)
     )
+
+
+def parse_known_spectrum_specs(texts: list[str]) -> list[KnownSpectrumSpec]:
+    """Parse all known-spectrum CLI specifications."""
+    return [parse_known_spectrum_spec(text) for text in texts]
+
+
+def ask_known_spectra_choice(model: str) -> list[KnownSpectrumSpec]:
+    """Ask whether any species spectra should be held fixed."""
+    species_text = ", ".join(MODEL_SPECIES[model])
+    print()
+    choice = input(
+        "Tenes espectros conocidos para alguna especie? "
+        f"Especies del modelo: {species_text}. Enter/n = no: "
+    ).strip().lower()
+    if choice in {"", "n", "no"}:
+        return []
+    if choice not in {"s", "si", "sí", "y", "yes"}:
+        return [parse_known_spectrum_spec(choice)]
+
+    specs: list[KnownSpectrumSpec] = []
+    print("Indica especies y archivo, por ejemplo: A B espectros.dat")
+    print("Usa una linea por archivo. Enter = terminar.")
+    while True:
+        text = input("Especies conocidas y archivo: ").strip()
+        if not text:
+            break
+        specs.append(parse_known_spectrum_spec(text))
+    return specs
+
+
+def print_known_spectra_report(known_species: tuple[str, ...], model: str) -> None:
+    """Print which spectral shapes are known and which spectra remain fitted."""
+    if not known_species:
+        print("Known spectra: none; all species will be fitted.")
+        return
+    fitted = tuple(label for label in MODEL_SPECIES[model] if label not in known_species)
+    print("Known spectral shapes with adjustable scale:", ", ".join(known_species))
+    if fitted:
+        print("Spectra fitted:", ", ".join(fitted))
+    else:
+        print("Spectra fitted: none; all species are known shapes with adjustable scale.")
+    print()
+
+
+def allowed_work_range_from_known_spectra(
+    known_specs: list[KnownSpectrumSpec],
+    experiment: Experiment,
+) -> tuple[float, float] | None:
+    """Return the wavelength interval shared by experiment and known spectra."""
+    known_range = known_spectra_wavelength_range(known_specs)
+    if known_range is None:
+        return None
+    lower = max(float(experiment.wavelength[0]), known_range[0])
+    upper = min(float(experiment.wavelength[-1]), known_range[1])
+    if lower >= upper:
+        raise ValueError(
+            "Experiment and known spectra do not share a wavelength overlap"
+        )
+    return lower, upper
+
+
+def print_allowed_work_range_report(work_range: tuple[float, float] | None) -> None:
+    """Print the wavelength range allowed by known spectra, if any."""
+    if work_range is None:
+        return
+    print(
+        "Known spectra limit the selectable fit range to: "
+        f"{work_range[0]:g}-{work_range[1]:g} nm"
+    )
+    print()
 
 
 
@@ -128,6 +211,11 @@ def print_fit_report(
     print(f"c0: {c0:g} M")
     print(f"model: {MODEL_LABELS[model]}")
     print(f"fit method: {result.method}")
+    if result.known_species:
+        print("known spectral shapes: " + ", ".join(result.known_species))
+    if result.known_spectrum_scales:
+        for label, scale in result.known_spectrum_scales.items():
+            print(f"known spectrum scale {label}: {scale:.10g}")
     if args.initial_spectrum_weight > 0:
         print(f"initial spectrum weight: {args.initial_spectrum_weight:g}")
     if k_max == args.k_max:
@@ -288,6 +376,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--known-spectrum",
+        action="append",
+        default=[],
+        help=(
+            "Fix one or more species spectra from a pure-spectra file. "
+            "Examples: --known-spectrum 'A B spectra.dat' or "
+            "'A,B=spectra.dat'. May be repeated."
+        ),
+    )
+    parser.add_argument(
         "--initial-spectrum-weight",
         type=float,
         default=0.0,
@@ -323,6 +421,7 @@ def main() -> None:
 
     model = args.model
     fit_method = args.fit_method
+    known_specs = parse_known_spectrum_specs(args.known_spectrum)
     if not args.no_plot and not args.skip_preprocess_dialog:
         print_exploration_message()
         plot_experiment_overview(
@@ -330,10 +429,32 @@ def main() -> None:
             baseline_window=args.baseline_window,
         )
         model = ask_model_choice(args.model)
-        fit_method = ask_fit_method_choice(args.fit_method, model)
+        if not known_specs:
+            known_specs = ask_known_spectra_choice(model)
+        fit_method = ask_fit_method_choice(
+            args.fit_method,
+            model,
+            has_known_spectra=bool(known_specs),
+        )
 
-    corrected, work_range, c0, reaction_start_time = preprocess_experiment(args, experiment)
+    allowed_work_range = allowed_work_range_from_known_spectra(known_specs, experiment)
+    print_allowed_work_range_report(allowed_work_range)
+
+    corrected, work_range, c0, reaction_start_time = preprocess_experiment(
+        args,
+        experiment,
+        allowed_work_range=allowed_work_range,
+    )
+    if allowed_work_range is not None:
+        print(f"Fit wavelength range selected: {work_range[0]:g}-{work_range[1]:g} nm")
+        print()
     cropped = crop_wavelengths(corrected, work_range[0], work_range[1])
+    known_spectra, known_species = build_known_spectra_matrix(
+        known_specs,
+        MODEL_SPECIES[model],
+        cropped.wavelength,
+    )
+    print_known_spectra_report(known_species, model)
     n_components = args.components
     if n_components is None:
         n_components = len(MODEL_SPECIES[model])
@@ -351,6 +472,8 @@ def main() -> None:
             expand_factor=args.k_max_expand_factor,
             max_expand_steps=args.k_max_expand_steps,
             initial_spectrum_weight=args.initial_spectrum_weight,
+            known_spectra=known_spectra,
+            known_species=known_species,
         )
 
         print_fit_report(
@@ -390,6 +513,7 @@ def main() -> None:
         c0,
         reaction_start_time,
         model,
+        protected_input_paths=[spec.path for spec in known_specs],
     )
 
 

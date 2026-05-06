@@ -56,6 +56,11 @@ def write_fit_summary_dat(
         lines.append(f"reaction_start_time_original_units\t{reaction_start_time:.10g}")
     if args.initial_spectrum_weight > 0:
         lines.append(f"initial_spectrum_weight\t{args.initial_spectrum_weight:.10g}")
+    if result.known_species:
+        lines.append("known_spectral_shapes\t" + ",".join(result.known_species))
+    if result.known_spectrum_scales:
+        for label, scale in result.known_spectrum_scales.items():
+            lines.append(f"known_spectrum_scale_{label}\t{scale:.10g}")
     for name, value in result.params.items():
         lines.append(f"{PARAMETER_LABELS.get(name, name)}\t{value:.10g}")
     if set(result.params) == {"k"}:
@@ -79,6 +84,7 @@ def export_final_fit_outputs(
     c0: float,
     reaction_start_time: float | None,
     model: str,
+    protected_input_paths: list[Path] | None = None,
 ) -> None:
     """Save final fit outputs for external plotting and reporting."""
     prefix = output_prefix_from_input(source_input_path)
@@ -86,6 +92,17 @@ def export_final_fit_outputs(
     spectra_path = prefix.with_name(f"{prefix.name}_pure_spectra.dat")
     summary_path = prefix.with_name(f"{prefix.name}_fit_summary.dat")
     panel_path = prefix.with_name(f"{prefix.name}_fit_panel.png")
+    protected_resolved = {
+        path.resolve()
+        for path in (protected_input_paths or [])
+        if path.exists()
+    }
+    if spectra_path.resolve() in protected_resolved:
+        spectra_path = prefix.with_name(f"{prefix.name}_fit_pure_spectra.dat")
+        print(
+            "Known-spectrum input matches the default pure-spectra output; "
+            f"writing recovered spectra to {spectra_path} instead."
+        )
 
     concentration_table = np.column_stack((experiment.t, result.c.T))
     concentration_header = "\t".join(("time", *result.species_labels))
@@ -132,4 +149,3 @@ def export_final_fit_outputs(
     print(f"  {spectra_path}")
     print(f"  {summary_path}")
     print(f"  {panel_path}")
-

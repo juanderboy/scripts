@@ -57,3 +57,5 @@ class FitResult:
     q: np.ndarray
     w: np.ndarray
     error: float
+    known_species: tuple[str, ...] = ()
+    known_spectrum_scales: dict[str, float] | None = None

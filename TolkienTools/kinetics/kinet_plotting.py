@@ -571,7 +571,14 @@ def plot_result(
 
     ax_pure = axes["pure"]
     for i, label in enumerate(result.species_labels):
-        ax_pure.plot(experiment.wavelength, result.spectra[:, i], label=label)
+        linestyle = "--" if label in result.known_species else "-"
+        suffix = " scaled known" if label in result.known_species else ""
+        ax_pure.plot(
+            experiment.wavelength,
+            result.spectra[:, i],
+            linestyle=linestyle,
+            label=f"{label}{suffix}",
+        )
     ax_pure.set_xlabel("Wavelength")
     ax_pure.set_ylabel("epsilon(lambda)")
     ax_pure.set_title("Recovered epsilon spectra")

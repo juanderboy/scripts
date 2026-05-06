@@ -307,6 +307,7 @@ def ask_preprocessing_choices(
     default_c0: float,
     baseline_window: float,
     default_reaction_start_time: float | None,
+    allowed_work_range: tuple[float, float] | None = None,
 ) -> tuple[
     list[int],
     float | None,
@@ -363,14 +364,37 @@ def ask_preprocessing_choices(
         baseline_points,
     )
 
-    work_text = input(
-        "Rango de lambdas para trabajar? Ej: 320-820. "
-        f"Enter = {default_work_range[0]:g}-{default_work_range[1]:g}: "
-    ).strip()
-    if not work_text:
-        work_range = default_work_range
-    else:
-        work_range = parse_wavelength_range(work_text)
+    while True:
+        if allowed_work_range is None:
+            range_prompt = (
+                "Rango de lambdas para trabajar? Ej: 320-820. "
+                f"Enter = {default_work_range[0]:g}-{default_work_range[1]:g}: "
+            )
+        else:
+            range_prompt = (
+                "Rango de lambdas para trabajar? "
+                f"Debe estar dentro de {allowed_work_range[0]:g}-"
+                f"{allowed_work_range[1]:g} nm. "
+                f"Enter = {default_work_range[0]:g}-{default_work_range[1]:g}: "
+            )
+        work_text = input(
+            range_prompt
+        ).strip()
+        if not work_text:
+            work_range = default_work_range
+        else:
+            work_range = parse_wavelength_range(work_text)
+        if allowed_work_range is None:
+            break
+        if (
+            work_range[0] >= allowed_work_range[0]
+            and work_range[1] <= allowed_work_range[1]
+        ):
+            break
+        print(
+            "Rango invalido: con espectros conocidos debe estar dentro de "
+            f"{allowed_work_range[0]:g}-{allowed_work_range[1]:g} nm."
+        )
 
     c0_text = input(
         f"Concentracion inicial c0 en molar? Enter = {default_c0:g} M: "
@@ -397,10 +421,21 @@ def ask_preprocessing_choices(
 def preprocess_experiment(
     args: argparse.Namespace,
     experiment: Experiment,
+    allowed_work_range: tuple[float, float] | None = None,
 ) -> tuple[Experiment, tuple[float, float], float, float | None]:
     """Apply optional spectrum removal and baseline correction."""
     drop_indices = parse_spectrum_selection(args.drop_spectra, experiment.t.size)
     work_range = tuple(sorted((args.lambda_min, args.lambda_max)))
+    if allowed_work_range is not None:
+        work_range = (
+            max(work_range[0], allowed_work_range[0]),
+            min(work_range[1], allowed_work_range[1]),
+        )
+        if work_range[0] >= work_range[1]:
+            raise ValueError(
+                "Requested wavelength range does not overlap the range allowed "
+                "by the experiment and known spectra"
+            )
     c0 = args.c0
     baseline_mode = args.baseline_mode
     baseline_points = args.baseline_points
@@ -446,6 +481,7 @@ def preprocess_experiment(
             default_c0=c0,
             baseline_window=args.baseline_window,
             default_reaction_start_time=reaction_start_time,
+            allowed_work_range=allowed_work_range,
         )
         corrected, cropped, used_region = apply_preprocessing_choices(
             args,
