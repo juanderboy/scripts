@@ -18,9 +18,21 @@ todos los flags están explicados en --help. Es bastante claro.
 El script de bash sirve para agarrar una peli de DM (prmtop + nc) y armar rst7's para cada frame de la peli. La gracia del script es que está pensado para trabajar con dinámicas
 como las suelo correr yo, fragmentadas en mil QM_*.nc. 
 Básicamente meterlo en la carpeta en que esté el loquesea.pmrtop y una secuencia de archivos QM_*.nc, y te armará un mol de QM_*.rst7 para que hagas cosas locas a gusto.
-Hay que entrar al sh y modificar el nombre del prmtop eh!
+Ahora se le pasa explícitamente el prmtop y el nc/patrón de nc:
+./fragmentar_nc.sh sistema.prmtop QM_01.nc
+./fragmentar_nc.sh sistema.prmtop 'QM_*.nc' all
+También se pueden pedir fotos específicas usando la numeración de VMD por defecto, donde las fotos van de 1 a N:
+./fragmentar_nc.sh sistema.prmtop 'QM_*.nc' 277
+./fragmentar_nc.sh sistema.prmtop 'QM_*.nc' 250-300
+./fragmentar_nc.sh sistema.prmtop 'QM_*.nc' 250-end
+./fragmentar_nc.sh sistema.prmtop 'QM_*.nc' 10,20,30-35
+Los archivos de salida mantienen esa misma numeración. Por ejemplo, la foto VMD 277 sale como QM_277.rst7.
+Amber/cpptraj también numera 1 a N; el argumento final amber queda aceptado por compatibilidad:
+./fragmentar_nc.sh sistema.prmtop 'QM_*.nc' 277 amber
+Si hay más de un cpptraj en la máquina, se puede forzar uno:
+CPPTRAJ=/home/juanderboy/anaconda3/envs/AmberTools22/bin/cpptraj ./fragmentar_nc.sh sistema.prmtop 'QM_*.nc' 277
+Ver opciones con ./fragmentar_nc.sh --help.
 
 cheers,
 
 J.
-
