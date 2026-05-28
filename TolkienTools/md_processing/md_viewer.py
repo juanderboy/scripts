@@ -65,7 +65,8 @@ def write_xyz_viewer(
     xyz_path: Path,
     output_path: Path,
     frame_number: int = 1,
-    labels: str = "hover",
+    labels: str = "always",
+    backend: str = "auto",
 ) -> Path:
     frames = parse_xyz_frames(xyz_path)
     if not frames:
@@ -74,6 +75,113 @@ def write_xyz_viewer(
         raise ValueError(f"Frame fuera de rango: {frame_number}. El XYZ tiene {len(frames)} frames.")
 
     frame = frames[frame_number - 1]
+    if backend in {"auto", "py3dmol"}:
+        try:
+            write_py3dmol_viewer(xyz_path, output_path, frame, frame_number, labels)
+            return output_path
+        except ImportError:
+            if backend == "py3dmol":
+                raise RuntimeError("No se pudo importar py3Dmol. Instalar con: python3 -m pip install py3Dmol")
+            print("[INFO] py3Dmol no esta instalado en este entorno.")
+            print("       Se generara un visor HTML basico con Plotly.")
+            print("       Para usar el visor molecular mejorado con esferas/sticks:")
+            print("         python3 -m pip install py3Dmol")
+        except Exception as exc:
+            if backend == "py3dmol":
+                raise RuntimeError(f"No se pudo generar el visor py3Dmol: {exc}") from exc
+
+    if backend not in {"auto", "plotly"}:
+        raise ValueError(f"Backend de visor no soportado: {backend}")
+    write_plotly_viewer(xyz_path, output_path, frame, frame_number, labels)
+    return output_path
+
+
+def frame_to_symbol_xyz(frame) -> str:
+    lines = [frame.natoms_line.strip(), frame.comment_line]
+    for atom_line, coord in zip(frame.atom_lines, frame.coords):
+        raw_element = atom_line.split()[0]
+        element = normalize_element(raw_element)
+        x, y, z = coord
+        lines.append(f"{element:2s} {x: .8f} {y: .8f} {z: .8f}")
+    return "\n".join(lines) + "\n"
+
+
+def write_py3dmol_viewer(
+    xyz_path: Path,
+    output_path: Path,
+    frame,
+    frame_number: int,
+    labels: str,
+) -> None:
+    import py3Dmol
+
+    view = py3Dmol.view(width=980, height=720)
+    view.addModel(frame_to_symbol_xyz(frame), "xyz")
+    view.setStyle({"stick": {"radius": 0.16}, "sphere": {"scale": 0.28}})
+
+    if labels == "always":
+        for atom_idx, (atom_line, coord) in enumerate(zip(frame.atom_lines, frame.coords), start=1):
+            element = normalize_element(atom_line.split()[0])
+            x, y, z = coord
+            view.addLabel(
+                f"{atom_idx} {element}",
+                {
+                    "position": {"x": x, "y": y, "z": z},
+                    "fontColor": "black",
+                    "backgroundColor": "white",
+                    "backgroundOpacity": 0.9,
+                    "fontSize": 15,
+                    "inFront": True,
+                },
+            )
+    else:
+        view.startjs += """
+	viewer_UNIQUEID.setHoverable({}, true,
+		function(atom, viewer, event, container) {
+			if (!atom.label) {
+				atom.label = viewer.addLabel((atom.index + 1) + " " + atom.elem, {
+					position: atom,
+					fontColor: "black",
+					backgroundColor: "white",
+					backgroundOpacity: 0.75,
+					fontSize: 14,
+					inFront: true
+				});
+			}
+		},
+		function(atom, viewer) {
+			if (atom.label) {
+				viewer.removeLabel(atom.label);
+				delete atom.label;
+			}
+		}
+	);
+"""
+
+    view.zoomTo()
+    title = f"{xyz_path.name} | frame {frame_number} | indices 1-based"
+    body = view._make_html()
+    html = (
+        "<!doctype html>\n"
+        "<html>\n"
+        "<head><meta charset=\"utf-8\"><title>XYZ viewer</title></head>\n"
+        "<body>\n"
+        f"<h3 style=\"font-family: sans-serif; margin: 8px 0;\">{title}</h3>\n"
+        f"{body}\n"
+        "</body>\n"
+        "</html>\n"
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(html, encoding="utf-8")
+
+
+def write_plotly_viewer(
+    xyz_path: Path,
+    output_path: Path,
+    frame,
+    frame_number: int,
+    labels: str,
+) -> None:
     elements: list[str] = []
     xs: list[float] = []
     ys: list[float] = []
@@ -136,5 +244,3 @@ def write_xyz_viewer(
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.write_html(output_path, include_plotlyjs=True, full_html=True)
-    return output_path
-

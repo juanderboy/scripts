@@ -89,12 +89,12 @@ The main routines are written in Python and mostly rely on:
 - NumPy
 - SciPy
 - Matplotlib
-- Plotly, optional for the 3D geometry viewer
+- py3Dmol and Plotly, optional for the 3D geometry viewer
 
 Typical installation:
 
 ```bash
-python3 -m pip install numpy scipy matplotlib plotly
+python3 -m pip install numpy scipy matplotlib py3Dmol plotly
 ```
 
 To print the dependency guide included in `TolkienTools`:

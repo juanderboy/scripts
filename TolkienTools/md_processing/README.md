@@ -39,9 +39,25 @@ Si por compatibilidad con rutinas viejas se necesitan archivos fragmentados
 `mq_N.dat`/`ms_N.dat`, se pueden pedir explicitamente con `--lio-aliases`.
 
 `geom` genera automaticamente un visor 3D HTML del primer frame antes de pedir o
-calcular metricas. El visor muestra los atomos como puntos rotables, con indices
-1-based en el hover. Para mostrar los indices siempre:
+calcular metricas e intenta abrirlo en el navegador. Si `py3Dmol` esta
+instalado, usa un visor molecular con esferas, sticks y colores por elemento; si
+no, usa Plotly como fallback. Por default muestra los indices atomicos siempre,
+porque el objetivo principal es elegir atomos para definir metricas. Para verlos
+solo al pasar el mouse:
 
 ```bash
-tolkien-tools md geom qm_completo.xyz --viewer-labels always
+tolkien-tools md geom qm_completo.xyz --viewer-labels hover
+```
+
+Para forzar un backend:
+
+```bash
+tolkien-tools md geom qm_completo.xyz --viewer-backend py3dmol
+tolkien-tools md geom qm_completo.xyz --viewer-backend plotly
+```
+
+Para generar el HTML sin abrirlo automaticamente:
+
+```bash
+tolkien-tools md geom qm_completo.xyz --no-open-viewer
 ```

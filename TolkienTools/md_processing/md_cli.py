@@ -59,7 +59,9 @@ def build_parser() -> argparse.ArgumentParser:
     geom_p.add_argument("--no-viewer", action="store_true", help="No generar visor 3D HTML del XYZ")
     geom_p.add_argument("--viewer-out", default="xyz_viewer.html", help="HTML de salida para inspeccion 3D")
     geom_p.add_argument("--viewer-frame", type=int, default=1, help="Frame del XYZ para mostrar en el visor")
-    geom_p.add_argument("--viewer-labels", choices=["hover", "always"], default="hover", help="Mostrar indices en hover o siempre")
+    geom_p.add_argument("--viewer-labels", choices=["hover", "always"], default="always", help="Mostrar indices siempre o solo en hover")
+    geom_p.add_argument("--viewer-backend", choices=["auto", "py3dmol", "plotly"], default="auto", help="Motor del visor 3D")
+    geom_p.add_argument("--no-open-viewer", action="store_true", help="No intentar abrir automaticamente el visor HTML")
 
     merge_pop_p = subparsers.add_parser("merge-pop", help="Une archivos de poblaciones desde segmentos numericos")
     add_root_args(merge_pop_p)
@@ -161,18 +163,26 @@ def cmd_geom(args: argparse.Namespace) -> None:
                 Path(args.viewer_out),
                 frame_number=args.viewer_frame,
                 labels=args.viewer_labels,
+                backend=args.viewer_backend,
             )
             print(f"Visor 3D para elegir atomos: {viewer_path.resolve()}")
-            print("Abrir ese HTML en el navegador para rotar la molecula e inspeccionar indices.")
+            if not args.no_open_viewer:
+                open_viewer_in_browser(viewer_path)
+            print("Usar el visor para rotar la molecula e inspeccionar indices atomicos.")
         except RuntimeError as exc:
             print(f"[WARN] No se genero visor 3D: {exc}")
 
+    metrics_were_prompted = False
     metric_texts = list(args.metric)
     if not metric_texts:
         metric_texts = prompt_metric_specs()
+        metrics_were_prompted = True
 
     specs = [parse_metric_spec(text) for text in metric_texts]
-    scatter_pairs = parse_scatter_pairs(args.scatter, specs)
+    scatter_texts = args.scatter
+    if scatter_texts is None and metrics_were_prompted:
+        scatter_texts = prompt_scatter_pairs(specs)
+    scatter_pairs = parse_scatter_pairs(scatter_texts, specs)
     analyze_xyz(xyz_path, specs, args.output, scatter_pairs, make_plots=not args.no_plots)
 
 
@@ -184,10 +194,10 @@ def prompt_metric_specs() -> list[str]:
     print("  dFeN:distance:9,10")
     print("  ang:angle:9,10,11")
     print("  dih:dihedral:1,2,3,4")
-    print("Dejar vacio para terminar.")
+    print("Defina todas las metricas que quiera seguir. Cuando termine, apriete Enter sin escribir nada para avanzar.")
     metrics: list[str] = []
     while True:
-        text = input("Metrica: ").strip()
+        text = input(f"Metrica {len(metrics) + 1} a seguir: ").strip()
         if not text:
             break
         parse_metric_spec(text)
@@ -195,6 +205,46 @@ def prompt_metric_specs() -> list[str]:
     if not metrics:
         raise SystemExit("No se definio ninguna metrica geometrica.")
     return metrics
+
+
+def prompt_scatter_pairs(specs) -> list[str]:
+    if len(specs) < 2:
+        return []
+
+    print()
+    print("Metricas definidas:")
+    for spec in specs:
+        print(f"  {spec.label}: {spec.kind}({','.join(map(str, spec.atoms))})")
+    print()
+    print("Opcional: definir plots cruzados de dispersion entre metricas.")
+    print("Formato: etiqueta_x,etiqueta_y")
+    print("Ejemplo: dFeN,dFeO")
+    print("Deje vacio para no generar plots cruzados.")
+
+    pairs: list[str] = []
+    while True:
+        text = input(f"Plot cruzado {len(pairs) + 1}: ").strip()
+        if not text:
+            break
+        # Validate as the user enters the pair, so typos fail early.
+        parse_scatter_pairs([text], specs)
+        pairs.append(text)
+    return pairs
+
+
+def open_viewer_in_browser(viewer_path: Path) -> None:
+    try:
+        import webbrowser
+
+        opened = webbrowser.open(viewer_path.resolve().as_uri(), new=2)
+    except Exception as exc:
+        print(f"[WARN] No pude abrir automaticamente el visor: {exc}")
+        return
+
+    if opened:
+        print("Visor 3D abierto en el navegador.")
+    else:
+        print("[WARN] No pude abrir automaticamente el navegador. Abrir manualmente el HTML indicado arriba.")
 
 
 def cmd_merge_pop(args: argparse.Namespace) -> None:

@@ -89,9 +89,9 @@ Base comun:
       numpy
       scipy
       matplotlib
-      plotly (opcional, para el visor 3D de geometria)
+      py3Dmol, plotly (opcionales, para el visor 3D de geometria)
   - En Ubuntu/Debian se pueden instalar con:
-      python3 -m pip install numpy scipy matplotlib plotly
+      python3 -m pip install numpy scipy matplotlib py3Dmol plotly
     o, si se prefiere usar paquetes del sistema:
       sudo apt install python3 python3-numpy python3-scipy python3-matplotlib
 
@@ -108,8 +108,8 @@ Archivos esperados por rutina:
      - Trabaja sobre corridas fragmentadas en subcarpetas numericas 1, 2, 3...
      - Puede inspeccionar segmentos, unir qm.xyz, analizar geometria, unir
        poblaciones y extraer rst7 desde QM_*.nc usando cpptraj.
-     - El analisis geometrico puede generar un visor 3D HTML si plotly esta
-       instalado.
+     - El analisis geometrico puede generar un visor 3D HTML con py3Dmol o
+       Plotly si estan instalados.
      - Subcomandos: inspect, merge-xyz, geom, merge-pop, spin-ts, split-nc.
 
   2. TD-DFT spectra
