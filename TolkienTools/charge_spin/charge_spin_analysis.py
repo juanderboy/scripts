@@ -131,6 +131,17 @@ def find_first_existing_file(candidates):
     return None
 
 
+def print_lio_merge_pop_hint(kind):
+    print(f"Falta el archivo consolidado de {kind}.")
+    print("Puede construirlo yendo al modulo 1 de Tolkien Tools: Molecular dynamics processing.")
+    print("Desde la carpeta raiz de la dinamica fragmentada, use:")
+    print("  tolkien-tools 1")
+    print("  elegir: merge-pop")
+    print("  ejemplo de argumentos: --sources mulliken mulliken_spin")
+    print("Tambien puede correrlo directo con:")
+    print("  tolkien-tools md merge-pop --sources mulliken mulliken_spin")
+
+
 def print_welcome_banner():
     """
     Print the program welcome banner.
@@ -2460,7 +2471,8 @@ def main():
         else:
             mq_files = get_sorted_files("mq")
             if not mq_files:
-                print("Error: no merged charge file ('mulliken_full.dat' or 'mq_full.dat') and no 'mq_*.dat' charge files were found.")
+                print_lio_merge_pop_hint("cargas")
+                print("Error: no se encontro 'mulliken_full.dat' ni 'mq_full.dat'.")
                 sys.exit(1)
 
             print("Charge files (mq_*.dat) to be merged:")
@@ -2484,7 +2496,8 @@ def main():
                 spin_full = "ms_full.dat"
             else:
                 spin_full = None
-                print("[INFO] No merged spin file ('mulliken_spin_full.dat' or 'ms_full.dat') and no 'ms_*.dat' files were found. Only charges will be analyzed.")
+                print_lio_merge_pop_hint("spines")
+                print("[INFO] No se encontro 'mulliken_spin_full.dat' ni 'ms_full.dat'. Solo se analizaran cargas.")
         spin_sign = -1.0
     else:
         # ORCA: each <prefix>_N.out/.dat file is a frame
