@@ -17,20 +17,23 @@ tolkien-tools requirements
 Atajos directos:
 
 ```bash
-tolkien-tools 1   # TD-DFT NEA spectra
-tolkien-tools 2   # charge and spin analysis
-tolkien-tools 3   # multilambda kinetics
+tolkien-tools 1   # molecular dynamics processing
+tolkien-tools 2   # TD-DFT NEA spectra
+tolkien-tools 3   # charge and spin analysis
+tolkien-tools 4   # multilambda kinetics
 ```
 
 Los argumentos despues del numero se pasan directo a la rutina elegida, por
 ejemplo:
 
 ```bash
-tolkien-tools 3 117.txt --fit-method pinv --no-plot
+tolkien-tools 4 117.txt --fit-method pinv --no-plot
 ```
 
 Rutinas conectadas inicialmente:
 
+- `md_processing/md_process.py`: procesado de dinamicas moleculares fragmentadas
+  en carpetas numericas.
 - `td_dft/td_analyze.py`: espectros de absorcion por Nuclear Ensemble
   Approximation (NEA) desde calculos TD-DFT de ORCA.
 - `charge_spin/charge_spin_analysis.py`: analisis de cargas Mulliken, CHELPG, Lowdin,
@@ -67,6 +70,10 @@ automaticamente reportes HTML desde TD-DFT son utiles `xdg-open` en Linux o
 
 Dependencias por rutina:
 
+- Molecular dynamics processing: lee corridas fragmentadas en subcarpetas
+  numericas con archivos como `qm.xyz`, `d_QM.in`, `mulliken_spin` y
+  `QM_*.nc`; usa solo Python estandar salvo los plots opcionales con
+  `matplotlib` y `split-nc`, que requiere `cpptraj`.
 - TD-DFT spectra: lee salidas TD-DFT de ORCA, normalmente `TD_*.out`; usa
   `numpy`, `scipy.signal.find_peaks` y `matplotlib`.
 - Charge and spin analysis: en modo LIO lee `mq_*.dat` y opcionalmente

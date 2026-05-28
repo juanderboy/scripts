@@ -42,28 +42,37 @@ tolkien-tools
 Modules can also be launched directly:
 
 ```bash
-tolkien-tools 1   # TD-DFT spectra
-tolkien-tools 2   # charge and spin analysis
-tolkien-tools 3   # multilambda kinetics
+tolkien-tools 1   # molecular dynamics processing
+tolkien-tools 2   # TD-DFT spectra
+tolkien-tools 3   # charge and spin analysis
+tolkien-tools 4   # multilambda kinetics
 ```
 
 ### Main Modules
 
-1. **TD-DFT spectra**
+1. **Molecular dynamics processing**
+
+   Rebuilds and analyzes fragmented MD/QMMM runs stored as numbered
+   subdirectories (`1/`, `2/`, `3/`, ...). It can inspect runs, merge `qm.xyz`
+   trajectories, analyze distances/angles/dihedrals, merge population files,
+   extract atom population time series, and split NetCDF trajectories into
+   `rst7` snapshots through `cpptraj`.
+
+2. **TD-DFT spectra**
 
    Builds absorption spectra using the Nuclear Ensemble Approximation (NEA)
    from ORCA TD-DFT outputs. It can process individual spectra or folders of
    files, generate convoluted curves, export data, and produce figures or HTML
    reports.
 
-2. **Charge and spin analysis**
+3. **Charge and spin analysis**
 
    Performs statistical analysis of charge and spin populations from
    trajectories or ensembles. It can work with LIO and ORCA data, including
    Mulliken, Loewdin, Hirshfeld, and CHELPG analyses, histograms, KDE modes,
    time series, and comparisons between systems.
 
-3. **Multilambda kinetics**
+4. **Multilambda kinetics**
 
    Fits multiwavelength spectrophotometric kinetic experiments. It reads
    absorbance matrices as wavelength vs. time, supports baseline correction,

@@ -24,6 +24,11 @@ class Tool:
 
 TOOLS = (
     Tool(
+        name="Molecular dynamics processing",
+        description="Rebuild and analyze fragmented MD/QMMM runs.",
+        script=ROOT / "TolkienTools" / "md_processing" / "md_process.py",
+    ),
+    Tool(
         name="TD-DFT spectra",
         description="Build NEA absorption spectra from ORCA TD-DFT outputs.",
         script=ROOT / "TolkienTools" / "td_dft" / "td_analyze.py",
@@ -59,24 +64,31 @@ Base comun:
 Programas externos:
   - No hace falta tener ORCA ni LIO instalados para ejecutar Tolkien Tools.
     Las rutinas leen archivos ya generados por esos programas.
+  - Para `tolkien-tools md split-nc` hace falta tener cpptraj disponible.
   - Para abrir automaticamente reportes HTML desde TD-DFT, son utiles
     xdg-open en Linux o wslview en WSL. Si no estan, el HTML igual se genera
     y se puede abrir manualmente.
 
 Archivos esperados por rutina:
-  1. TD-DFT spectra
+  1. Molecular dynamics processing
+     - Trabaja sobre corridas fragmentadas en subcarpetas numericas 1, 2, 3...
+     - Puede inspeccionar segmentos, unir qm.xyz, analizar geometria, unir
+       poblaciones y extraer rst7 desde QM_*.nc usando cpptraj.
+     - Subcomandos: inspect, merge-xyz, geom, merge-pop, spin-ts, split-nc.
+
+  2. TD-DFT spectra
      - Lee salidas TD-DFT de ORCA, normalmente archivos TD_*.out.
      - Usa numpy, scipy.signal.find_peaks y matplotlib.
      - Puede generar PNG, CSV/DAT y un HTML interactivo.
 
-  2. Charge and spin analysis
+  3. Charge and spin analysis
      - Modo LIO: lee series mq_*.dat y, si existen, ms_*.dat.
      - Modo ORCA: lee archivos <prefijo>_N.out o <prefijo>_N.dat con tablas
        Mulliken, Loewdin, Hirshfeld y/o CHELPG.
      - Usa numpy, scipy.stats.gaussian_kde, scipy.signal.find_peaks y
        matplotlib.
 
-  3. Multilambda kinetics
+  4. Multilambda kinetics
      - Lee tablas espectrofotometricas lambda x tiempo en .txt/.csv estilo
        semicolon, y puede convertir archivos .KD.
      - Usa numpy, scipy.optimize, scipy.optimize.nnls y matplotlib.
@@ -135,26 +147,33 @@ def tool_from_cli_choice(choice: str) -> Tool:
     normalized = choice.strip().lower()
     aliases = {
         "1": 0,
-        "td": 0,
-        "td-dft": 0,
-        "spectra": 0,
-        "espectros": 0,
+        "md": 0,
+        "dynamics": 0,
+        "dinamica": 0,
+        "dinamicas": 0,
+        "procesado": 0,
+        "processing": 0,
         "2": 1,
-        "charges": 1,
-        "charge": 1,
-        "spin": 1,
-        "cargas": 1,
+        "td": 1,
+        "td-dft": 1,
+        "spectra": 1,
+        "espectros": 1,
         "3": 2,
-        "kinetics": 2,
-        "kinetic": 2,
-        "kinet": 2,
-        "cinetica": 2,
-        "cineticas": 2,
+        "charges": 2,
+        "charge": 2,
+        "spin": 2,
+        "cargas": 2,
+        "4": 3,
+        "kinetics": 3,
+        "kinetic": 3,
+        "kinet": 3,
+        "cinetica": 3,
+        "cineticas": 3,
     }
     if normalized not in aliases:
         raise ValueError(
-            "La opcion debe ser 1, 2 o 3 "
-            "(tambien se aceptan aliases como td, charges o kinetics). "
+            "La opcion debe ser 1, 2, 3 o 4 "
+            "(tambien se aceptan aliases como md, td, charges o kinetics). "
             "Para dependencias usa: requirements, deps o requisitos."
         )
     return TOOLS[aliases[normalized]]
