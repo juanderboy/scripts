@@ -59,8 +59,8 @@ MD_SUBCOMMANDS = (
     ),
     (
         "geom",
-        "Analizar distancias, angulos y dihedros en un XYZ multi-frame.",
-        "qm_completo.xyz --metric dFeN:distance:9,10",
+        "Generar visor 3D y analizar distancias, angulos y dihedros.",
+        "qm_completo.xyz",
     ),
     (
         "merge-pop",
@@ -89,8 +89,9 @@ Base comun:
       numpy
       scipy
       matplotlib
+      plotly (opcional, para el visor 3D de geometria)
   - En Ubuntu/Debian se pueden instalar con:
-      python3 -m pip install numpy scipy matplotlib
+      python3 -m pip install numpy scipy matplotlib plotly
     o, si se prefiere usar paquetes del sistema:
       sudo apt install python3 python3-numpy python3-scipy python3-matplotlib
 
@@ -107,6 +108,8 @@ Archivos esperados por rutina:
      - Trabaja sobre corridas fragmentadas en subcarpetas numericas 1, 2, 3...
      - Puede inspeccionar segmentos, unir qm.xyz, analizar geometria, unir
        poblaciones y extraer rst7 desde QM_*.nc usando cpptraj.
+     - El analisis geometrico puede generar un visor 3D HTML si plotly esta
+       instalado.
      - Subcomandos: inspect, merge-xyz, geom, merge-pop, spin-ts, split-nc.
 
   2. TD-DFT spectra

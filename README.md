@@ -54,10 +54,10 @@ tolkien-tools 4   # multilambda kinetics
 
    Rebuilds and analyzes fragmented MD/QMMM runs stored as numbered
    subdirectories (`1/`, `2/`, `3/`, ...). It can inspect runs, merge `qm.xyz`
-   trajectories, analyze distances/angles/dihedrals, merge population files
-   into consolidated files consumed by charge/spin analysis, extract atom
-   population time series, and split NetCDF trajectories into `rst7` snapshots
-   through `cpptraj`.
+   trajectories, generate a rotatable 3D XYZ viewer, analyze
+   distances/angles/dihedrals, merge population files into consolidated files
+   consumed by charge/spin analysis, extract atom population time series, and
+   split NetCDF trajectories into `rst7` snapshots through `cpptraj`.
 
 2. **TD-DFT spectra**
 
@@ -89,11 +89,12 @@ The main routines are written in Python and mostly rely on:
 - NumPy
 - SciPy
 - Matplotlib
+- Plotly, optional for the 3D geometry viewer
 
 Typical installation:
 
 ```bash
-python3 -m pip install numpy scipy matplotlib
+python3 -m pip install numpy scipy matplotlib plotly
 ```
 
 To print the dependency guide included in `TolkienTools`:

@@ -12,6 +12,7 @@ from pathlib import Path
 
 from md_common import discover_segments
 from md_geometry import analyze_xyz, parse_metric_spec, parse_scatter_pairs
+from md_viewer import write_xyz_viewer
 from md_xyz import merge_segment_xyz, xyz_summary
 
 
@@ -51,10 +52,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     geom_p = subparsers.add_parser("geom", help="Analiza distancias, angulos y dihedros en un XYZ multi-frame")
     geom_p.add_argument("xyz", help="Archivo XYZ multi-frame")
-    geom_p.add_argument("--metric", action="append", required=True, help="Formato etiqueta:tipo:atomos. Ej: dFeN:distance:9,10")
+    geom_p.add_argument("--metric", action="append", default=[], help="Formato etiqueta:tipo:atomos. Ej: dFeN:distance:9,10")
     geom_p.add_argument("--scatter", action="append", help="Par etiqueta_x,etiqueta_y. Puede repetirse")
     geom_p.add_argument("--output", default="xyz_analysis", help="Prefijo de archivos de salida")
     geom_p.add_argument("--no-plots", action="store_true", help="No generar PNG")
+    geom_p.add_argument("--no-viewer", action="store_true", help="No generar visor 3D HTML del XYZ")
+    geom_p.add_argument("--viewer-out", default="xyz_viewer.html", help="HTML de salida para inspeccion 3D")
+    geom_p.add_argument("--viewer-frame", type=int, default=1, help="Frame del XYZ para mostrar en el visor")
+    geom_p.add_argument("--viewer-labels", choices=["hover", "always"], default="hover", help="Mostrar indices en hover o siempre")
 
     merge_pop_p = subparsers.add_parser("merge-pop", help="Une archivos de poblaciones desde segmentos numericos")
     add_root_args(merge_pop_p)
@@ -148,9 +153,48 @@ def cmd_merge_xyz(args: argparse.Namespace) -> None:
 
 
 def cmd_geom(args: argparse.Namespace) -> None:
-    specs = [parse_metric_spec(text) for text in args.metric]
+    xyz_path = Path(args.xyz)
+    if not args.no_viewer:
+        try:
+            viewer_path = write_xyz_viewer(
+                xyz_path,
+                Path(args.viewer_out),
+                frame_number=args.viewer_frame,
+                labels=args.viewer_labels,
+            )
+            print(f"Visor 3D para elegir atomos: {viewer_path.resolve()}")
+            print("Abrir ese HTML en el navegador para rotar la molecula e inspeccionar indices.")
+        except RuntimeError as exc:
+            print(f"[WARN] No se genero visor 3D: {exc}")
+
+    metric_texts = list(args.metric)
+    if not metric_texts:
+        metric_texts = prompt_metric_specs()
+
+    specs = [parse_metric_spec(text) for text in metric_texts]
     scatter_pairs = parse_scatter_pairs(args.scatter, specs)
-    analyze_xyz(Path(args.xyz), specs, args.output, scatter_pairs, make_plots=not args.no_plots)
+    analyze_xyz(xyz_path, specs, args.output, scatter_pairs, make_plots=not args.no_plots)
+
+
+def prompt_metric_specs() -> list[str]:
+    print()
+    print("Definir parametros geometricos. Formato: etiqueta:tipo:atomos")
+    print("Tipos: distance, angle, dihedral")
+    print("Ejemplos:")
+    print("  dFeN:distance:9,10")
+    print("  ang:angle:9,10,11")
+    print("  dih:dihedral:1,2,3,4")
+    print("Dejar vacio para terminar.")
+    metrics: list[str] = []
+    while True:
+        text = input("Metrica: ").strip()
+        if not text:
+            break
+        parse_metric_spec(text)
+        metrics.append(text)
+    if not metrics:
+        raise SystemExit("No se definio ninguna metrica geometrica.")
+    return metrics
 
 
 def cmd_merge_pop(args: argparse.Namespace) -> None:

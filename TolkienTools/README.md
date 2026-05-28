@@ -50,11 +50,12 @@ Base comun:
 
 - Python 3.10 o superior.
 - Paquetes Python: `numpy`, `scipy`, `matplotlib`.
+- Paquete opcional para el visor 3D de geometria: `plotly`.
 
 Instalacion con `pip`:
 
 ```bash
-python3 -m pip install numpy scipy matplotlib
+python3 -m pip install numpy scipy matplotlib plotly
 ```
 
 Alternativa Ubuntu/Debian con paquetes del sistema:
@@ -72,9 +73,10 @@ Dependencias por rutina:
 
 - Molecular dynamics processing: lee corridas fragmentadas en subcarpetas
   numericas con archivos como `qm.xyz`, `d_QM.in`, `mulliken_spin` y
-  `QM_*.nc`; `merge-pop` genera archivos full compatibles con el modo LIO de
-  charge/spin; usa solo Python estandar salvo los plots opcionales con
-  `matplotlib` y `split-nc`, que requiere `cpptraj`.
+  `QM_*.nc`; `geom` puede generar un visor 3D HTML con Plotly; `merge-pop`
+  genera archivos full compatibles con el modo LIO de charge/spin; usa solo
+  Python estandar salvo el visor opcional con `plotly`, los plots opcionales
+  con `matplotlib` y `split-nc`, que requiere `cpptraj`.
 - TD-DFT spectra: lee salidas TD-DFT de ORCA, normalmente `TD_*.out`; usa
   `numpy`, `scipy.signal.find_peaks` y `matplotlib`.
 - Charge and spin analysis: en modo LIO lee `mq_*.dat` y opcionalmente

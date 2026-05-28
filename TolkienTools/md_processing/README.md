@@ -15,6 +15,7 @@ Subcomandos principales:
 ```bash
 tolkien-tools md inspect
 tolkien-tools md merge-xyz --out qm_completo.xyz
+tolkien-tools md geom qm_completo.xyz
 tolkien-tools md geom qm_completo.xyz --metric dFeN:distance:9,10
 tolkien-tools md merge-pop --sources mulliken mulliken_spin
 tolkien-tools md spin-ts --source mulliken_spin --atoms 9 10
@@ -36,3 +37,11 @@ de salida.
 
 Si por compatibilidad con rutinas viejas se necesitan archivos fragmentados
 `mq_N.dat`/`ms_N.dat`, se pueden pedir explicitamente con `--lio-aliases`.
+
+`geom` genera automaticamente un visor 3D HTML del primer frame antes de pedir o
+calcular metricas. El visor muestra los atomos como puntos rotables, con indices
+1-based en el hover. Para mostrar los indices siempre:
+
+```bash
+tolkien-tools md geom qm_completo.xyz --viewer-labels always
+```
