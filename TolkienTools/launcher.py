@@ -299,6 +299,12 @@ def launch_tool(tool: Tool, args: list[str]) -> int:
     return subprocess.run(command, cwd=Path.cwd()).returncode
 
 
+def prompt_continue() -> bool:
+    print()
+    choice = input("Enter = volver al menu principal; q = salir: ").strip().lower()
+    return choice not in {"q", "quit", "salir", "0"}
+
+
 def main() -> int:
     print_banner()
     try:
@@ -308,12 +314,17 @@ def main() -> int:
                 return 0
             tool = tool_from_cli_choice(sys.argv[1])
             args = sys.argv[2:]
+            return launch_tool(tool, args)
         else:
-            tool = prompt_tool_choice()
-            if tool is None:
-                return 0
-            args = prompt_extra_args(tool)
-        return launch_tool(tool, args)
+            last_returncode = 0
+            while True:
+                tool = prompt_tool_choice()
+                if tool is None:
+                    return last_returncode
+                args = prompt_extra_args(tool)
+                last_returncode = launch_tool(tool, args)
+                if not prompt_continue():
+                    return last_returncode
     except KeyboardInterrupt:
         print()
         return 130
