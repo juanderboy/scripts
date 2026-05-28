@@ -64,8 +64,8 @@ MD_SUBCOMMANDS = (
     ),
     (
         "merge-pop",
-        "Unir archivos de poblaciones como mulliken_spin o lowdin_spin.",
-        "--root /ruta/a/MD_a --sources mulliken_spin lowdin_spin",
+        "Unir poblaciones y generar aliases LIO mq_*.dat/ms_*.dat.",
+        "--root /ruta/a/MD_a --sources mulliken mulliken_spin",
     ),
     (
         "spin-ts",

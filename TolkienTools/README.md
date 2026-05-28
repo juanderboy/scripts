@@ -72,7 +72,8 @@ Dependencias por rutina:
 
 - Molecular dynamics processing: lee corridas fragmentadas en subcarpetas
   numericas con archivos como `qm.xyz`, `d_QM.in`, `mulliken_spin` y
-  `QM_*.nc`; usa solo Python estandar salvo los plots opcionales con
+  `QM_*.nc`; `merge-pop` genera `mq_*.dat`/`ms_*.dat` compatibles con el modo
+  LIO de charge/spin; usa solo Python estandar salvo los plots opcionales con
   `matplotlib` y `split-nc`, que requiere `cpptraj`.
 - TD-DFT spectra: lee salidas TD-DFT de ORCA, normalmente `TD_*.out`; usa
   `numpy`, `scipy.signal.find_peaks` y `matplotlib`.

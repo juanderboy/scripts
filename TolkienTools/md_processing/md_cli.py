@@ -16,6 +16,10 @@ from md_xyz import merge_segment_xyz, xyz_summary
 
 
 POPULATION_DEFAULTS = ("mulliken", "mulliken_spin", "lowdin", "lowdin_spin")
+LIO_ALIASES = {
+    "mulliken": "mq",
+    "mulliken_spin": "ms",
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -27,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  tolkien-tools md inspect\n"
             "  tolkien-tools md merge-xyz --out qm_completo.xyz\n"
             "  tolkien-tools md geom qm_completo.xyz --metric dFeN:distance:9,10\n"
-            "  tolkien-tools md merge-pop --sources mulliken_spin lowdin_spin\n"
+            "  tolkien-tools md merge-pop --sources mulliken mulliken_spin\n"
             "  tolkien-tools md spin-ts --source mulliken_spin --atoms 9 10\n"
             "  tolkien-tools md split-nc sistema.prmtop 'QM_*.nc' 250-300\n"
         ),
@@ -58,6 +62,11 @@ def build_parser() -> argparse.ArgumentParser:
     merge_pop_p.add_argument("--input-name", default="d_QM.in")
     merge_pop_p.add_argument("--out-dir", default=".", help="Directorio de salida")
     merge_pop_p.add_argument("--suffix", default="_full.dat", help="Sufijo de salida")
+    merge_pop_p.add_argument(
+        "--no-lio-aliases",
+        action="store_true",
+        help="No generar alias compatibles con charge/spin LIO (mq_*.dat, ms_*.dat)",
+    )
 
     spin_p = subparsers.add_parser("spin-ts", help="Serie temporal de poblacion para atomos seleccionados")
     add_root_args(spin_p)
@@ -161,6 +170,14 @@ def cmd_merge_pop(args: argparse.Namespace) -> None:
         count = merge_population_source(segments, source, output)
         if count:
             print(f"{source}: {count} segmentos -> {output}")
+            if not args.no_lio_aliases and source in LIO_ALIASES:
+                alias_count = write_lio_alias_files(segments, source, LIO_ALIASES[source], out_dir)
+                alias_full = out_dir / f"{LIO_ALIASES[source]}_full.dat"
+                merge_population_source(segments, source, alias_full)
+                print(
+                    f"  alias LIO: {alias_count} segmentos -> "
+                    f"{LIO_ALIASES[source]}_*.dat y {alias_full}"
+                )
         else:
             print(f"{source}: no encontrado")
 
@@ -182,6 +199,20 @@ def merge_population_source(segments, source: str, output: Path) -> int:
                     out.write("\n")
     if count == 0:
         output.unlink(missing_ok=True)
+    return count
+
+
+def write_lio_alias_files(segments, source: str, alias: str, out_dir: Path) -> int:
+    count = 0
+    for segment in segments:
+        path = segment.path / source
+        if not path.exists():
+            continue
+        output = out_dir / f"{alias}_{segment.index}.dat"
+        with path.open("r", encoding="utf-8", errors="ignore") as inp, output.open("w", encoding="utf-8") as out:
+            for line in inp:
+                out.write(line)
+        count += 1
     return count
 
 
