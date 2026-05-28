@@ -16,7 +16,7 @@ from md_xyz import merge_segment_xyz, xyz_summary
 
 
 POPULATION_DEFAULTS = ("mulliken", "mulliken_spin", "lowdin", "lowdin_spin")
-LIO_ALIASES = {
+LIO_FRAGMENT_ALIASES = {
     "mulliken": "mq",
     "mulliken_spin": "ms",
 }
@@ -62,11 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
     merge_pop_p.add_argument("--input-name", default="d_QM.in")
     merge_pop_p.add_argument("--out-dir", default=".", help="Directorio de salida")
     merge_pop_p.add_argument("--suffix", default="_full.dat", help="Sufijo de salida")
-    merge_pop_p.add_argument(
-        "--no-lio-aliases",
-        action="store_true",
-        help="No generar alias compatibles con charge/spin LIO (mq_*.dat, ms_*.dat)",
-    )
+    merge_pop_p.add_argument("--lio-aliases", action="store_true", help="Tambien generar mq_*.dat/ms_*.dat fragmentados")
 
     spin_p = subparsers.add_parser("spin-ts", help="Serie temporal de poblacion para atomos seleccionados")
     add_root_args(spin_p)
@@ -170,13 +166,11 @@ def cmd_merge_pop(args: argparse.Namespace) -> None:
         count = merge_population_source(segments, source, output)
         if count:
             print(f"{source}: {count} segmentos -> {output}")
-            if not args.no_lio_aliases and source in LIO_ALIASES:
-                alias_count = write_lio_alias_files(segments, source, LIO_ALIASES[source], out_dir)
-                alias_full = out_dir / f"{LIO_ALIASES[source]}_full.dat"
-                merge_population_source(segments, source, alias_full)
+            if args.lio_aliases and source in LIO_FRAGMENT_ALIASES:
+                alias_count = write_lio_alias_files(segments, source, LIO_FRAGMENT_ALIASES[source], out_dir)
                 print(
-                    f"  alias LIO: {alias_count} segmentos -> "
-                    f"{LIO_ALIASES[source]}_*.dat y {alias_full}"
+                    f"  alias LIO fragmentado: {alias_count} segmentos -> "
+                    f"{LIO_FRAGMENT_ALIASES[source]}_*.dat"
                 )
         else:
             print(f"{source}: no encontrado")

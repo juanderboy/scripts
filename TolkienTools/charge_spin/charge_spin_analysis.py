@@ -124,6 +124,13 @@ def merge_files(files, outname):
     print(f"[OK] Files {files[0]} ... {files[-1]} merged into '{outname}'.")
 
 
+def find_first_existing_file(candidates):
+    for fname in candidates:
+        if os.path.isfile(fname):
+            return fname
+    return None
+
+
 def print_welcome_banner():
     """
     Print the program welcome banner.
@@ -2445,30 +2452,39 @@ def main():
     active_spin_axis_label = "Spin"
 
     if prog == "lio":
-        # Charge files
-        mq_files = get_sorted_files("mq")
-        if not mq_files:
-            print("Error: no 'mq_*.dat' charge files were found.")
-            sys.exit(1)
-
-        print("Charge files (mq_*.dat) to be merged:")
-        for f in mq_files:
-            print("  ", f)
-        merge_files(mq_files, "mq_full.dat")
-
-        # Spin files (optional)
-        ms_files = get_sorted_files("ms")
-        have_spin = bool(ms_files)
-        if have_spin:
-            print("Spin files (ms_*.dat) to be merged:")
-            for f in ms_files:
-                print("  ", f)
-            merge_files(ms_files, "ms_full.dat")
+        # LIO can consume either already-merged files from `tolkien-tools md
+        # merge-pop` or legacy per-segment mq_*.dat/ms_*.dat files.
+        charge_full = find_first_existing_file(("mulliken_full.dat", "mq_full.dat"))
+        if charge_full:
+            print(f"Using merged charge file: {charge_full}")
         else:
-            print("[INFO] No 'ms_*.dat' files were found. Only charges will be analyzed.")
+            mq_files = get_sorted_files("mq")
+            if not mq_files:
+                print("Error: no merged charge file ('mulliken_full.dat' or 'mq_full.dat') and no 'mq_*.dat' charge files were found.")
+                sys.exit(1)
 
-        charge_full = "mq_full.dat"
-        spin_full = "ms_full.dat"
+            print("Charge files (mq_*.dat) to be merged:")
+            for f in mq_files:
+                print("  ", f)
+            merge_files(mq_files, "mq_full.dat")
+            charge_full = "mq_full.dat"
+
+        spin_full = find_first_existing_file(("mulliken_spin_full.dat", "ms_full.dat"))
+        if spin_full:
+            have_spin = True
+            print(f"Using merged spin file: {spin_full}")
+        else:
+            ms_files = get_sorted_files("ms")
+            have_spin = bool(ms_files)
+            if have_spin:
+                print("Spin files (ms_*.dat) to be merged:")
+                for f in ms_files:
+                    print("  ", f)
+                merge_files(ms_files, "ms_full.dat")
+                spin_full = "ms_full.dat"
+            else:
+                spin_full = None
+                print("[INFO] No merged spin file ('mulliken_spin_full.dat' or 'ms_full.dat') and no 'ms_*.dat' files were found. Only charges will be analyzed.")
         spin_sign = -1.0
     else:
         # ORCA: each <prefix>_N.out/.dat file is a frame

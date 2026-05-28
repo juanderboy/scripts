@@ -55,9 +55,9 @@ tolkien-tools 4   # multilambda kinetics
    Rebuilds and analyzes fragmented MD/QMMM runs stored as numbered
    subdirectories (`1/`, `2/`, `3/`, ...). It can inspect runs, merge `qm.xyz`
    trajectories, analyze distances/angles/dihedrals, merge population files
-   into names compatible with charge/spin analysis, extract atom population
-   time series, and split NetCDF trajectories into `rst7` snapshots through
-   `cpptraj`.
+   into consolidated files consumed by charge/spin analysis, extract atom
+   population time series, and split NetCDF trajectories into `rst7` snapshots
+   through `cpptraj`.
 
 2. **TD-DFT spectra**
 

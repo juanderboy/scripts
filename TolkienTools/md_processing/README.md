@@ -25,11 +25,14 @@ La rama asume el formato habitual de corridas QMMM/MD fragmentadas: una carpeta
 raiz con segmentos numericos, cada uno con archivos como `qm.xyz`, `d_QM.in`,
 `mulliken`, `mulliken_spin`, `lowdin`, `lowdin_spin` y trayectorias `QM_*.nc`.
 
-`merge-pop` tambien genera aliases compatibles con el modo LIO de la rama de
-analisis de cargas y spines:
+`merge-pop` genera archivos consolidados compatibles con el modo LIO de la rama
+de analisis de cargas y spines:
 
-- `mulliken` -> `mq_N.dat` y `mq_full.dat`
-- `mulliken_spin` -> `ms_N.dat` y `ms_full.dat`
+- `mulliken` -> `mulliken_full.dat`
+- `mulliken_spin` -> `mulliken_spin_full.dat`
 
 Esto permite correr despues `tolkien-tools 3` en modo LIO sobre la misma carpeta
 de salida.
+
+Si por compatibilidad con rutinas viejas se necesitan archivos fragmentados
+`mq_N.dat`/`ms_N.dat`, se pueden pedir explicitamente con `--lio-aliases`.
