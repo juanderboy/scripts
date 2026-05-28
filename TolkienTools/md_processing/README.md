@@ -15,7 +15,7 @@ Subcomandos principales:
 ```bash
 tolkien-tools md inspect
 tolkien-tools md merge-xyz --out qm_completo.xyz
-tolkien-tools md geom qm_completo.xyz
+tolkien-tools md geom
 tolkien-tools md geom qm_completo.xyz --metric dFeN:distance:9,10
 tolkien-tools md merge-pop --sources mulliken mulliken_spin
 tolkien-tools md spin-ts --source mulliken_spin --atoms 9 10

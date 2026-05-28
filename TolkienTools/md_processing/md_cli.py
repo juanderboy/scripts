@@ -31,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Ejemplos:\n"
             "  tolkien-tools md inspect\n"
             "  tolkien-tools md merge-xyz --out qm_completo.xyz\n"
-            "  tolkien-tools md geom qm_completo.xyz --metric dFeN:distance:9,10\n"
+            "  tolkien-tools md geom --metric dFeN:distance:9,10\n"
             "  tolkien-tools md merge-pop --sources mulliken mulliken_spin\n"
             "  tolkien-tools md spin-ts --source mulliken_spin --atoms 9 10\n"
             "  tolkien-tools md split-nc sistema.prmtop 'QM_*.nc' 250-300\n"
@@ -51,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     merge_xyz_p.add_argument("--out", default="qm_completo.xyz")
 
     geom_p = subparsers.add_parser("geom", help="Analiza distancias, angulos y dihedros en un XYZ multi-frame")
-    geom_p.add_argument("xyz", help="Archivo XYZ multi-frame")
+    geom_p.add_argument("xyz", nargs="?", default="qm_completo.xyz", help="Archivo XYZ multi-frame (default: qm_completo.xyz)")
     geom_p.add_argument("--metric", action="append", default=[], help="Formato etiqueta:tipo:atomos. Ej: dFeN:distance:9,10")
     geom_p.add_argument("--scatter", action="append", help="Par etiqueta_x,etiqueta_y. Puede repetirse")
     geom_p.add_argument("--output", default="xyz_analysis", help="Prefijo de archivos de salida")
