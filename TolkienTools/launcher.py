@@ -46,6 +46,39 @@ TOOLS = (
     ),
 )
 
+MD_SUBCOMMANDS = (
+    (
+        "inspect",
+        "Revisar segmentos, frames, tiempos y archivos disponibles.",
+        "--root /ruta/a/MD_a",
+    ),
+    (
+        "merge-xyz",
+        "Unir los qm.xyz de una corrida fragmentada.",
+        "--root /ruta/a/MD_a --out qm_completo.xyz",
+    ),
+    (
+        "geom",
+        "Analizar distancias, angulos y dihedros en un XYZ multi-frame.",
+        "qm_completo.xyz --metric dFeN:distance:9,10",
+    ),
+    (
+        "merge-pop",
+        "Unir archivos de poblaciones como mulliken_spin o lowdin_spin.",
+        "--root /ruta/a/MD_a --sources mulliken_spin lowdin_spin",
+    ),
+    (
+        "spin-ts",
+        "Extraer serie temporal de poblacion para atomos seleccionados.",
+        "--root /ruta/a/MD_a --source mulliken_spin --atoms 9 10",
+    ),
+    (
+        "split-nc",
+        "Extraer snapshots rst7 desde QM_*.nc usando cpptraj.",
+        "sistema.prmtop 'QM_*.nc' 250-300",
+    ),
+)
+
 
 REQUIREMENTS_GUIDE = """\
 Requisitos para instalar y correr Tolkien Tools
@@ -195,6 +228,9 @@ def is_requirements_choice(choice: str) -> bool:
 def prompt_extra_args(tool: Tool) -> list[str]:
     args = list(tool.default_args)
 
+    if tool.name == "Molecular dynamics processing":
+        return prompt_md_processing_args()
+
     if tool.ask_input_file:
         text = input(
             "Archivo de entrada para la cinetica? "
@@ -209,6 +245,44 @@ def prompt_extra_args(tool: Tool) -> list[str]:
     if extra:
         args.extend(shlex.split(extra))
 
+    return args
+
+
+def prompt_md_processing_args() -> list[str]:
+    print()
+    print("Herramientas de procesado de dinamicas:")
+    for index, (command, description, example) in enumerate(MD_SUBCOMMANDS, start=1):
+        print(f"  {index}. {command}")
+        print(f"     {description}")
+        print(f"     Ejemplo de argumentos: {example}")
+    print("  h. Ayuda general de procesado")
+    print("  0. Mostrar ayuda y salir")
+    print()
+
+    choice = input("Elegir herramienta (Enter = inspect): ").strip().lower()
+    if choice in {"h", "help", "ayuda", "0"}:
+        return ["--help"]
+    if choice == "":
+        command = "inspect"
+        example = "--root /ruta/a/MD_a"
+    else:
+        if not choice.isdigit():
+            raise ValueError("La herramienta de procesado debe elegirse por numero.")
+        index = int(choice)
+        if index < 1 or index > len(MD_SUBCOMMANDS):
+            raise ValueError(f"La herramienta debe estar entre 1 y {len(MD_SUBCOMMANDS)}.")
+        command, _description, example = MD_SUBCOMMANDS[index - 1]
+
+    print()
+    print(f"Seleccionado: {command}")
+    print(f"Ejemplo: tolkien-tools md {command} {example}")
+    extra = input(
+        f"Argumentos para '{command}'? Enter = usar defaults en la carpeta actual: "
+    ).strip()
+
+    args = [command]
+    if extra:
+        args.extend(shlex.split(extra))
     return args
 
 
