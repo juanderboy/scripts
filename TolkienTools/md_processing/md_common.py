@@ -16,10 +16,19 @@ class Segment:
     nstlim: int | None
 
     @property
-    def total_ps(self) -> float | None:
+    def planned_total_ps(self) -> float | None:
         if self.dt_ps is None or self.nstlim is None:
             return None
         return self.dt_ps * self.nstlim
+
+    @property
+    def total_ps(self) -> float | None:
+        return self.planned_total_ps
+
+    def duration_from_frames(self, nframes: int) -> float | None:
+        if self.dt_ps is None:
+            return None
+        return self.dt_ps * nframes
 
 
 def parse_float(text: str) -> float:
@@ -86,4 +95,3 @@ def count_xyz_frames(path: Path) -> tuple[int, int]:
     if natoms_ref is None:
         raise ValueError(f"No se encontraron frames XYZ en {path}")
     return natoms_ref, nframes
-

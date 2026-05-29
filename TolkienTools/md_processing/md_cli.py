@@ -102,14 +102,19 @@ def cmd_inspect(args: argparse.Namespace) -> None:
     print(f"Root: {root.resolve()}")
     print(f"Segmentos detectados: {len(segments)}")
     print()
-    print("seg  qm.xyz  frames  dt_ps      nstlim   total_ps   archivos poblacion")
+    print("seg  qm.xyz  frames  dt_ps      nstlim   planned_ps  real_ps    estado       archivos poblacion")
 
     total_frames = 0
-    total_ps = 0.0
+    total_real_ps = 0.0
+    total_planned_ps = 0.0
+    real_segments = 0
+    planned_segments = 0
+    mismatched_segments = []
     for segment in segments:
         xyz_path = segment.path / args.xyz_name
         xyz_state = "no"
         frames_text = "-"
+        frames = None
         if xyz_path.exists():
             try:
                 _natoms, frames = xyz_summary(xyz_path)
@@ -118,18 +123,44 @@ def cmd_inspect(args: argparse.Namespace) -> None:
                 total_frames += frames
             except ValueError as exc:
                 xyz_state = f"error:{exc}"
-        if segment.total_ps is not None:
-            total_ps += segment.total_ps
+        planned_ps = segment.planned_total_ps
+        if planned_ps is not None:
+            total_planned_ps += planned_ps
+            planned_segments += 1
+        real_ps = segment.duration_from_frames(frames) if frames is not None else None
+        if real_ps is not None:
+            total_real_ps += real_ps
+            real_segments += 1
+        state = segment_frame_state(segment.nstlim, frames)
+        if state != "ok" and state != "-":
+            mismatched_segments.append(segment.index)
         pop_sources = [name for name in POPULATION_DEFAULTS if (segment.path / name).exists()]
         print(
             f"{segment.index:>3}  {xyz_state:<6} {frames_text:>6}  "
             f"{format_optional(segment.dt_ps):>8}  {format_optional(segment.nstlim):>7}  "
-            f"{format_optional(segment.total_ps):>9}  {','.join(pop_sources) or '-'}"
+            f"{format_optional(planned_ps):>10}  {format_optional(real_ps):>8}  "
+            f"{state:<11}  {','.join(pop_sources) or '-'}"
         )
 
     print()
     print(f"Frames XYZ totales detectados: {total_frames}")
-    print(f"Tiempo total desde d_QM.in (ps): {total_ps:.9f}")
+    if real_segments:
+        print(f"Tiempo real desde frames XYZ (ps): {total_real_ps:.9f}")
+    if planned_segments:
+        print(f"Tiempo planeado desde d_QM.in (ps): {total_planned_ps:.9f}")
+    if mismatched_segments:
+        text = ", ".join(str(index) for index in mismatched_segments)
+        print(f"Segmentos donde frames XYZ != nstlim: {text}")
+
+
+def segment_frame_state(nstlim: int | None, frames: int | None) -> str:
+    if frames is None or nstlim is None:
+        return "-"
+    if frames == nstlim:
+        return "ok"
+    if frames < nstlim:
+        return "incompleta"
+    return "mas_frames"
 
 
 def format_optional(value: object) -> str:
@@ -344,8 +375,8 @@ def build_population_timeseries_from_segments(segments, source: str, atom_ids: l
             continue
         if dt_override is not None:
             frame_dt = dt_override
-        elif segment.total_ps is not None:
-            frame_dt = segment.total_ps / len(frame_values)
+        elif segment.dt_ps is not None:
+            frame_dt = segment.dt_ps
         else:
             frame_dt = 1.0
         for values in frame_values:

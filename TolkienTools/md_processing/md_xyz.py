@@ -77,10 +77,7 @@ def merge_segment_xyz(
                 continue
             processed_segments += 1
 
-            if segment.total_ps is not None:
-                frame_dt_ps = segment.total_ps / len(frames)
-            else:
-                frame_dt_ps = 1.0
+            frame_dt_ps = segment.dt_ps if segment.dt_ps is not None else 1.0
 
             for seg_frame, frame in enumerate(frames, start=1):
                 out.write(f"{frame.natoms_line.strip()}\n")
@@ -95,4 +92,3 @@ def merge_segment_xyz(
 
 def xyz_summary(path: Path) -> tuple[int, int]:
     return count_xyz_frames(path)
-

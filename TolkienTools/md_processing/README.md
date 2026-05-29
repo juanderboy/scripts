@@ -26,6 +26,11 @@ La rama asume el formato habitual de corridas QMMM/MD fragmentadas: una carpeta
 raiz con segmentos numericos, cada uno con archivos como `qm.xyz`, `d_QM.in`,
 `mulliken`, `mulliken_spin`, `lowdin`, `lowdin_spin` y trayectorias `QM_*.nc`.
 
+Para tiempos de dinamica, `d_QM.in` se usa para leer el `dt`; el `nstlim` queda
+como referencia del tiempo planeado. Los tiempos reales se calculan a partir de
+la cantidad de frames efectivamente presentes en `qm.xyz`, de modo que segmentos
+cortados antes de tiempo no inflen la duracion total.
+
 `merge-pop` genera archivos consolidados compatibles con el modo LIO de la rama
 de analisis de cargas y spines:
 
