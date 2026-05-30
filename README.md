@@ -86,7 +86,6 @@ tolkien-tools 4   # multilambda kinetics
 Clone or download the repository into a stable location. For example:
 
 ```bash
-cd ~/Soft
 git clone <REPOSITORY_URL> scripts
 cd scripts
 ```
