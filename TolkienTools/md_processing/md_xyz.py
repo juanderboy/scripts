@@ -72,7 +72,7 @@ def merge_segment_xyz(
             xyz_path = segment.path / xyz_name
             if not xyz_path.exists():
                 continue
-            frames = parse_xyz_frames(xyz_path)
+            frames = parse_xyz_frames(xyz_path)[1:]
             if not frames:
                 continue
             processed_segments += 1

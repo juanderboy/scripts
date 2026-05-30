@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""ORCA-specific readers and population-table converters.
+
+This module discovers ordered ORCA outputs, extracts available population
+analyses and writes normalized intermediate files consumed by the statistics.
+"""
+
 import glob
 import os
 import re

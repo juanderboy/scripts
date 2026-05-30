@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""Command-line interface for TD-DFT spectrum analysis.
+
+It defines terminal options and dispatches processing to either the single-file
+or folder workflow.
+"""
+
 import argparse
 import os
 import sys

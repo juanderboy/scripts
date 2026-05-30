@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""Batch TD-DFT spectrum processing for folders of ORCA outputs.
+
+This module selects TD files, computes individual and cumulative spectra, and
+writes tables, plots, peak summaries and an interactive HTML report.
+"""
+
 import csv
 import glob
 import json

@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""File readers, mergers and output writers for charge/spin populations.
+
+It handles fragmented LIO population files, parsed frame tables and combined
+time-series exports for individual atoms or grouped entities.
+"""
+
 import glob
 import os
 import re
@@ -25,14 +31,21 @@ def get_sorted_files(prefix):
     return [f for _, f in files]
 
 
-def merge_files(files, outname):
+def merge_files(files, outname, skip_initial_population_block=False):
     """
     Concatenate a list of files into outname.
     """
     with open(outname, "w") as out:
         for fname in files:
+            population_blocks = 0
             with open(fname, "r") as f:
                 for line in f:
+                    if skip_initial_population_block:
+                        stripped = line.strip()
+                        if stripped.startswith("#") and "Population Analysis" in stripped:
+                            population_blocks += 1
+                        if population_blocks < 2:
+                            continue
                     out.write(line)
     print(f"[OK] Files {files[0]} ... {files[-1]} merged into '{outname}'.")
 

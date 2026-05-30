@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Shared configuration and prompt helpers for charge/spin analysis.
+
+The functions here parse common user selections, labels, percentages and
+output names used by the interactive analysis workflow.
+"""
+
 import os
 import re
 import sys

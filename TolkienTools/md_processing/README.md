@@ -31,6 +31,14 @@ como referencia del tiempo planeado. Los tiempos reales se calculan a partir de
 la cantidad de frames efectivamente presentes en `qm.xyz`, de modo que segmentos
 cortados antes de tiempo no inflen la duracion total.
 
+Al procesar los `qm.xyz` segmentados, Tolkien Tools descarta siempre el primer
+bloque de coordenadas de cada segmento y cuenta la dinamica desde el segundo.
+`merge-xyz` tampoco incluye esos bloques iniciales en el XYZ consolidado.
+
+El mismo criterio se aplica a los bloques segmentados de poblaciones electronicas:
+`merge-pop`, `spin-ts` y el merge legacy de `mq_N.dat`/`ms_N.dat` descartan el
+primer bloque de cada segmento antes del analisis.
+
 `merge-pop` genera archivos consolidados compatibles con el modo LIO de la rama
 de analisis de cargas y spines:
 

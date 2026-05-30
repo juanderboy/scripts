@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""Numerical construction of broadened TD-DFT spectra.
+
+This module provides Gaussian broadening and oscillator-strength conversion
+used by both single-file and batch analyses.
+"""
+
 import math
 
 import numpy as np

@@ -38,10 +38,9 @@ estadistica, los histogramas y los archivos de salida:
 Si hay poblaciones de spin, la seleccion de atomos puede hacerse manualmente o
 automaticamente por localizacion de spin. El modo automatico calcula, para cada
 snapshot, `abs(spin_atom) / sum(abs(spin_todos_los_atomos))`, promedia esa
-fraccion en la dinamica, toma atomos hasta cubrir el porcentaje pedido
-(90% por defecto), y genera histogramas individuales solo para los atomos que
-superan el umbral minimo pedido. El resto de los atomos se agrupa como una
-entidad `resto`, con su propio histograma.
+fraccion en la dinamica y genera histogramas individuales solo para los atomos
+que superan el umbral minimo pedido (5% por defecto). El resto de los atomos se
+agrupa como una entidad `resto`, con su propio histograma.
 
 En modo ORCA, aunque el histograma se arme con muchos `SP_*.out`, el visor
 `spin_localization_viewer.html` usa una unica geometria representativa: toma el

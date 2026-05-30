@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""Shared constants and utility helpers for TD-DFT spectrum processing.
+
+The module centralizes physical constants, range parsing, file ordering and
+portable HTML-opening helpers used by the TD-DFT workflows.
+"""
+
 import math
 import os
 import re

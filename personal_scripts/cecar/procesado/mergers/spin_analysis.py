@@ -24,8 +24,14 @@ def merge_files(files, outname="ms_full.dat"):
     """
     with open(outname, "w") as out:
         for fname in files:
+            population_blocks = 0
             with open(fname, "r") as inp:
                 for line in inp:
+                    stripped = line.strip()
+                    if stripped.startswith("# Mulliken Spin Population Analysis"):
+                        population_blocks += 1
+                    if population_blocks < 2:
+                        continue
                     out.write(line)
     print(f"[OK] Archivo combinado escrito en '{outname}'.")
 
@@ -148,4 +154,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

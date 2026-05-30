@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Statistical analysis for charge and spin population time series.
+
+This module computes summaries, histograms, modes, grouped actors and automatic
+spin-localization selections from parsed population frames.
+"""
+
 import sys
 
 import numpy as np
@@ -916,7 +922,6 @@ def select_spin_localization_atoms(
     spin_full,
     header_start,
     spin_sign,
-    coverage_fraction=0.90,
     min_atom_fraction=0.05,
     report_outname="spin_localization_auto_selection.dat",
     lio=False,
@@ -960,25 +965,13 @@ def select_spin_localization_atoms(
     mean_spin = np.nanmean(spin_values, axis=0)
     mean_abs_spin = np.nanmean(abs_values, axis=0)
 
-    order = np.argsort(avg_fraction)[::-1]
-    coverage_atoms = []
-    cumulative = 0.0
-    for idx in order:
-        aid = all_atom_ids[idx]
-        frac = float(avg_fraction[idx])
-        if np.isnan(frac):
-            continue
-        coverage_atoms.append(aid)
-        cumulative += frac
-        if cumulative >= coverage_fraction:
-            break
-
+    order = [idx for idx in np.argsort(avg_fraction)[::-1] if not np.isnan(avg_fraction[idx])]
     own_atoms = [
         all_atom_ids[idx] for idx in order
         if float(avg_fraction[idx]) >= min_atom_fraction
     ]
-    if not own_atoms and coverage_atoms:
-        own_atoms = [coverage_atoms[0]]
+    if not own_atoms:
+        own_atoms = [all_atom_ids[order[0]]]
 
     rest_atoms = [aid for aid in all_atom_ids if aid not in set(own_atoms)]
     actor_config = None
@@ -992,10 +985,9 @@ def select_spin_localization_atoms(
     with open(report_outname, "w") as out:
         out.write(
             "# atom_id atom_type mean_spin mean_abs_spin avg_abs_spin_fraction "
-            "cumulative_fraction in_coverage own_histogram group\n"
+            "cumulative_fraction own_histogram group\n"
         )
         running = 0.0
-        coverage_set = set(coverage_atoms)
         own_set = set(own_atoms)
         for idx in order:
             aid = all_atom_ids[idx]
@@ -1007,21 +999,13 @@ def select_spin_localization_atoms(
             out.write(
                 f"{aid:d} {atom_types.get(aid, '?')} {mean_spin[idx]:.7f} "
                 f"{mean_abs_spin[idx]:.7f} {frac:.7f} {running:.7f} "
-                f"{int(aid in coverage_set)} {int(aid in own_set)} {group}\n"
+                f"{int(aid in own_set)} {group}\n"
             )
 
-    selected_labels = [
-        f"{aid}({atom_types.get(aid, '?')}, {100.0 * float(avg_fraction[all_atom_ids.index(aid)]):.1f}%)"
-        for aid in coverage_atoms
-    ]
     own_labels = [
         f"{aid}({atom_types.get(aid, '?')}, {100.0 * float(avg_fraction[all_atom_ids.index(aid)]):.1f}%)"
         for aid in own_atoms
     ]
-    print(
-        f"[INFO] Automatic spin localization: {100.0 * coverage_fraction:.1f}% of the average |spin| "
-        f"is covered by: {', '.join(selected_labels)}"
-    )
     print(
         f"[INFO] Individual spin histograms will be generated for atoms above "
         f"{100.0 * min_atom_fraction:.1f}%: {', '.join(own_labels)}"
@@ -1030,4 +1014,4 @@ def select_spin_localization_atoms(
         print(f"[INFO] The remaining {len(rest_atoms)} atoms will be grouped as 'resto'.")
     print(f"[OK] Automatic spin-localization report saved to '{report_outname}'.")
 
-    return own_atoms, actor_config, all_atom_ids, atom_types, avg_fraction, coverage_atoms
+    return own_atoms, actor_config, all_atom_ids, atom_types, avg_fraction

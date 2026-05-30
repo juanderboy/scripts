@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""ORCA TD-DFT output parsing.
+
+This module extracts transition energies and oscillator strengths from ORCA
+absorption-spectrum sections for downstream convolution.
+"""
+
 import re
 
 import numpy as np

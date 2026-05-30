@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""Single-file TD-DFT spectrum processing.
+
+The routines convert one ORCA output into a broadened spectrum and optionally
+write exports, peak information and plots.
+"""
+
 import math
 import os
 import re

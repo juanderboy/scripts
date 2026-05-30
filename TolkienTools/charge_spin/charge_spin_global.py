@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Cross-system summaries for previously generated charge/spin analyses.
+
+This module collects per-system time series and builds comparable histograms,
+figures and reports for selected atoms or grouped entities.
+"""
+
 import glob
 import os
 import re

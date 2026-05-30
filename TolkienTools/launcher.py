@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import subprocess
-import shlex
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,32 +49,26 @@ MD_SUBCOMMANDS = (
     (
         "inspect",
         "Revisar segmentos, frames, tiempos y archivos disponibles.",
-        "--root /ruta/a/MD_a",
     ),
     (
         "merge-xyz",
         "Unir los qm.xyz de una corrida fragmentada.",
-        "--root /ruta/a/MD_a --out qm_completo.xyz",
     ),
     (
         "geom",
         "Generar visor 3D y analizar distancias, angulos y dihedros.",
-        "qm_completo.xyz",
     ),
     (
         "merge-pop",
         "Unir poblaciones en archivos full compatibles con charge/spin.",
-        "--root /ruta/a/MD_a --sources mulliken mulliken_spin",
     ),
     (
         "spin-ts",
         "Extraer serie temporal de poblacion para atomos seleccionados.",
-        "--root /ruta/a/MD_a --source mulliken_spin --atoms 9 10",
     ),
     (
         "split-nc",
         "Extraer snapshots rst7 desde QM_*.nc usando cpptraj.",
-        "sistema.prmtop 'QM_*.nc' 250-300",
     ),
 )
 
@@ -231,9 +224,6 @@ def is_requirements_choice(choice: str) -> bool:
 def prompt_extra_args(tool: Tool) -> list[str]:
     args = list(tool.default_args)
 
-    if tool.name == "Molecular dynamics processing":
-        return prompt_md_processing_args()
-
     if tool.ask_input_file:
         text = input(
             "Archivo de entrada para la cinetica? "
@@ -242,51 +232,80 @@ def prompt_extra_args(tool: Tool) -> list[str]:
         if text:
             args.append(text)
 
-    extra = input(
-        "Argumentos extra para pasar a la rutina? Enter = ninguno: "
-    ).strip()
-    if extra:
-        args.extend(shlex.split(extra))
-
     return args
 
 
-def prompt_md_processing_args() -> list[str]:
+def prompt_md_processing_choice() -> tuple[str, list[str] | None]:
     print()
     print("Herramientas de procesado de dinamicas:")
-    for index, (command, description, example) in enumerate(MD_SUBCOMMANDS, start=1):
+    for index, (command, description) in enumerate(MD_SUBCOMMANDS, start=1):
         print(f"  {index}. {command}")
         print(f"     {description}")
-        print(f"     Ejemplo de argumentos: {example}")
     print("  h. Ayuda general de procesado")
-    print("  0. Mostrar ayuda y salir")
+    print("  0. Volver al menu principal")
+    print("  q. Salir")
     print()
 
     choice = input("Elegir herramienta (Enter = inspect): ").strip().lower()
-    if choice in {"h", "help", "ayuda", "0"}:
-        return ["--help"]
+    if choice in {"h", "help", "ayuda"}:
+        return "launch", ["--help"]
+    if choice in {"0", "m", "menu", "principal"}:
+        return "main", None
+    if choice in {"q", "quit", "salir"}:
+        return "exit", None
     if choice == "":
         command = "inspect"
-        example = "--root /ruta/a/MD_a"
     else:
         if not choice.isdigit():
             raise ValueError("La herramienta de procesado debe elegirse por numero.")
         index = int(choice)
         if index < 1 or index > len(MD_SUBCOMMANDS):
             raise ValueError(f"La herramienta debe estar entre 1 y {len(MD_SUBCOMMANDS)}.")
-        command, _description, example = MD_SUBCOMMANDS[index - 1]
-
-    print()
-    print(f"Seleccionado: {command}")
-    print(f"Ejemplo: tolkien-tools md {command} {example}")
-    extra = input(
-        f"Argumentos para '{command}'? Enter = usar defaults en la carpeta actual: "
-    ).strip()
+        command, _description = MD_SUBCOMMANDS[index - 1]
 
     args = [command]
-    if extra:
-        args.extend(shlex.split(extra))
-    return args
+    if command == "spin-ts":
+        atoms = input("Atomos a seguir, separados por espacios (Enter = cancelar): ").strip()
+        if not atoms:
+            return "cancel", None
+        if not all(atom.isdigit() for atom in atoms.split()):
+            raise ValueError("Los atomos deben ser indices enteros separados por espacios.")
+        args.extend(["--atoms", *atoms.split()])
+    elif command == "split-nc":
+        prmtop = input("Archivo prmtop (Enter = cancelar): ").strip()
+        if not prmtop:
+            return "cancel", None
+        nc_pattern = input("Patron de trayectorias NetCDF (Enter = QM_*.nc): ").strip() or "QM_*.nc"
+        frames = input("Frames a extraer (Enter = all): ").strip() or "all"
+        args.extend([prmtop, nc_pattern, frames])
+    return "launch", args
+
+
+def prompt_md_continue() -> str:
+    print()
+    choice = input("Enter = volver al panel de dinamicas; m = menu principal; q = salir: ").strip().lower()
+    if choice in {"q", "quit", "salir"}:
+        return "exit"
+    if choice in {"m", "menu", "principal", "0"}:
+        return "main"
+    return "md"
+
+
+def run_md_processing_menu(tool: Tool, last_returncode: int = 0) -> tuple[int, bool]:
+    while True:
+        action, args = prompt_md_processing_choice()
+        if action == "exit":
+            return last_returncode, True
+        if action == "main":
+            return last_returncode, False
+        if action == "cancel":
+            continue
+        last_returncode = launch_tool(tool, args or [])
+        destination = prompt_md_continue()
+        if destination == "exit":
+            return last_returncode, True
+        if destination == "main":
+            return last_returncode, False
 
 
 def launch_tool(tool: Tool, args: list[str]) -> int:
@@ -324,6 +343,11 @@ def main() -> int:
                 tool = prompt_tool_choice()
                 if tool is None:
                     return last_returncode
+                if tool.name == "Molecular dynamics processing":
+                    last_returncode, should_exit = run_md_processing_menu(tool, last_returncode)
+                    if should_exit:
+                        return last_returncode
+                    continue
                 args = prompt_extra_args(tool)
                 last_returncode = launch_tool(tool, args)
                 if not prompt_continue():

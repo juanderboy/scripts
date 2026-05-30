@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""HTML molecular viewers for automatic spin-localization results.
+
+The viewer highlights selected atoms on an XYZ or ORCA geometry and writes an
+interactive 3D representation for visual inspection.
+"""
+
 import glob
 import math
 import os

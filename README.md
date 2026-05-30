@@ -81,6 +81,40 @@ tolkien-tools 4   # multilambda kinetics
    recovery of pure spectra. Available models include `A -> B`, `A -> B -> C`,
    and `A <-> B -> C`, with `nnls`, `pinv`, and `factor` fitting methods.
 
+## Basic Installation
+
+Clone or download the repository into a stable location. For example:
+
+```bash
+cd ~/Soft
+git clone <REPOSITORY_URL> scripts
+cd scripts
+```
+
+Install the required Python packages and the optional 3D viewer dependencies:
+
+```bash
+python3 -m pip install numpy scipy matplotlib py3Dmol plotly
+```
+
+The `tolkien-tools` executable lives at the repository root. To call it from
+any working directory, make it executable and add the repository folder to
+your `PATH` in `~/.bashrc`:
+
+```bash
+chmod +x ~/Soft/scripts/tolkien-tools
+echo 'export PATH="$HOME/Soft/scripts:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+If the repository was cloned elsewhere, replace `$HOME/Soft/scripts` with the
+actual path. Confirm the installation with:
+
+```bash
+tolkien-tools requirements
+python3 -c "import numpy, scipy, matplotlib; print('OK')"
+```
+
 ## Basic Requirements
 
 The main routines are written in Python and mostly rely on:
@@ -90,12 +124,6 @@ The main routines are written in Python and mostly rely on:
 - SciPy
 - Matplotlib
 - py3Dmol and Plotly, optional for the 3D geometry viewer
-
-Typical installation:
-
-```bash
-python3 -m pip install numpy scipy matplotlib py3Dmol plotly
-```
 
 To print the dependency guide included in `TolkienTools`:
 

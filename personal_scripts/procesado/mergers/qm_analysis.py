@@ -372,7 +372,7 @@ def main() -> None:
             continue
 
         dt_ps, nstlim = parse_d_qm_input(inp_path)
-        frames = parse_xyz_frames(xyz_path)
+        frames = parse_xyz_frames(xyz_path)[1:]
         if not frames:
             skipped += 1
             continue

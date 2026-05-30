@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Interactive orchestration for charge and spin population analysis.
+
+This module coordinates input discovery, user choices, automatic atom
+selection, statistical analysis and output generation for LIO and ORCA data.
+"""
+
 import os
 import sys
 
@@ -301,7 +307,7 @@ def main():
             print("Charge files (mq_*.dat) to be merged:")
             for f in mq_files:
                 print("  ", f)
-            merge_files(mq_files, "mq_full.dat")
+            merge_files(mq_files, "mq_full.dat", skip_initial_population_block=True)
             charge_full = "mq_full.dat"
 
         spin_full = find_first_existing_file(("mulliken_spin_full.dat", "ms_full.dat"))
@@ -315,7 +321,7 @@ def main():
                 print("Spin files (ms_*.dat) to be merged:")
                 for f in ms_files:
                     print("  ", f)
-                merge_files(ms_files, "ms_full.dat")
+                merge_files(ms_files, "ms_full.dat", skip_initial_population_block=True)
                 spin_full = "ms_full.dat"
             else:
                 spin_full = None
@@ -567,21 +573,12 @@ def main():
         atom_selection_mode = "manual"
 
     if atom_selection_mode == "auto_spin":
-        coverage_value = prompt_float_value(
-            "Average spin coverage to explain (Enter = 90%): ",
-            90.0,
-            min_value=0.0,
-        )
         min_atom_value = prompt_float_value(
             "Minimum average spin percentage for an individual histogram (Enter = 5%): ",
             5.0,
             min_value=0.0,
         )
-        coverage_fraction = normalize_percent_input(coverage_value)
         min_atom_fraction = normalize_percent_input(min_atom_value)
-        if coverage_fraction <= 0.0 or coverage_fraction > 1.0:
-            print("Error: spin coverage must be in the interval (0, 100].")
-            sys.exit(1)
         if min_atom_fraction < 0.0 or min_atom_fraction > 1.0:
             print("Error: the minimum atom percentage must be in the interval [0, 100].")
             sys.exit(1)
@@ -592,12 +589,10 @@ def main():
             all_spin_atom_ids,
             atom_type_map,
             avg_spin_fraction,
-            coverage_atoms,
         ) = select_spin_localization_atoms(
             spin_full,
             active_spin_header,
             spin_sign,
-            coverage_fraction=coverage_fraction,
             min_atom_fraction=min_atom_fraction,
             lio=(prog == "lio"),
         )
@@ -626,7 +621,7 @@ def main():
                     write_orca_spin_localization_viewer(
                         viewer_orca_file,
                         "spin_localization_viewer.html",
-                        coverage_atoms,
+                        atom_ids,
                         atom_type_map,
                         avg_fraction_by_atom,
                     )
@@ -643,7 +638,7 @@ def main():
                     write_spin_localization_viewer(
                         xyz_path,
                         "spin_localization_viewer.html",
-                        coverage_atoms,
+                        atom_ids,
                         atom_type_map,
                         avg_fraction_by_atom,
                     )

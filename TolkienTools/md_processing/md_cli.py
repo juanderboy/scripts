@@ -118,6 +118,7 @@ def cmd_inspect(args: argparse.Namespace) -> None:
         if xyz_path.exists():
             try:
                 _natoms, frames = xyz_summary(xyz_path)
+                frames = max(frames - 1, 0)
                 xyz_state = "si"
                 frames_text = str(frames)
                 total_frames += frames
@@ -308,17 +309,27 @@ def merge_population_source(segments, source: str, output: Path) -> int:
             path = segment.path / source
             if not path.exists():
                 continue
-            count += 1
-            wrote_line = False
-            with path.open("r", encoding="utf-8", errors="ignore") as fh:
-                for line in fh:
-                    wrote_line = True
-                    out.write(line)
-                if wrote_line and not line_ends_with_newline(path):
+            if write_population_source_without_initial_block(path, out):
+                count += 1
+                if not line_ends_with_newline(path):
                     out.write("\n")
     if count == 0:
         output.unlink(missing_ok=True)
     return count
+
+
+def write_population_source_without_initial_block(path: Path, out) -> bool:
+    population_blocks = 0
+    wrote_line = False
+    with path.open("r", encoding="utf-8", errors="ignore") as fh:
+        for line in fh:
+            stripped = line.strip()
+            if stripped.startswith("#") and "Population Analysis" in stripped:
+                population_blocks += 1
+            if population_blocks >= 2:
+                out.write(line)
+                wrote_line = True
+    return wrote_line
 
 
 def write_lio_alias_files(segments, source: str, alias: str, out_dir: Path) -> int:
@@ -371,6 +382,7 @@ def build_population_timeseries_from_segments(segments, source: str, atom_ids: l
         if not path.exists():
             continue
         frame_values = parse_population_blocks(path, atom_ids)
+        frame_values = frame_values[1:]
         if not frame_values:
             continue
         if dt_override is not None:

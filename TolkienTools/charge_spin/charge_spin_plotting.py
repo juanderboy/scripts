@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""Plot generation for charge and spin population analyses.
+
+The routines build combined histogram panels and time-series figures from the
+statistics prepared by the analysis layer.
+"""
 
 import matplotlib.pyplot as plt
 import numpy as np

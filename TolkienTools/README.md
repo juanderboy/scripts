@@ -44,6 +44,43 @@ El launcher llama las rutinas por ruta absoluta y mantiene como carpeta de
 trabajo el directorio desde donde se corre `tolkien-tools`, que es lo que
 necesitan las rutinas que buscan archivos en la carpeta actual.
 
+## Instalacion basica
+
+Clonar o descargar el repositorio en una carpeta estable. Por ejemplo:
+
+```bash
+cd ~/Soft
+git clone <URL_DEL_REPOSITORIO> scripts
+cd scripts
+```
+
+Instalar las dependencias Python principales y los paquetes opcionales del
+visor 3D:
+
+```bash
+python3 -m pip install numpy scipy matplotlib py3Dmol plotly
+```
+
+El ejecutable `tolkien-tools` se encuentra en la raiz del repositorio. Para
+poder llamarlo desde cualquier carpeta, asegurar que tenga permiso de ejecucion
+y agregar esa carpeta al `PATH` en `~/.bashrc`:
+
+```bash
+chmod +x ~/Soft/scripts/tolkien-tools
+echo 'export PATH="$HOME/Soft/scripts:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+Si el repositorio se instalo en otra ubicacion, reemplazar
+`$HOME/Soft/scripts` por la ruta correspondiente.
+
+Comprobar la instalacion:
+
+```bash
+tolkien-tools requirements
+python3 -c "import numpy, scipy, matplotlib; print('OK')"
+```
+
 ## Requisitos
 
 Base comun:
@@ -51,12 +88,6 @@ Base comun:
 - Python 3.10 o superior.
 - Paquetes Python: `numpy`, `scipy`, `matplotlib`.
 - Paquetes opcionales para el visor 3D de geometria: `py3Dmol`, `plotly`.
-
-Instalacion con `pip`:
-
-```bash
-python3 -m pip install numpy scipy matplotlib py3Dmol plotly
-```
 
 Alternativa Ubuntu/Debian con paquetes del sistema:
 
@@ -86,9 +117,3 @@ Dependencias por rutina:
 - Multilambda kinetics: lee tablas espectrofotometricas lambda x tiempo y
   puede convertir `.KD`; usa `numpy`, `scipy.optimize`,
   `scipy.optimize.nnls` y `matplotlib`.
-
-Chequeo rapido:
-
-```bash
-python3 -c "import numpy, scipy, matplotlib; print('OK')"
-```
