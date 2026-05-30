@@ -49,9 +49,9 @@ necesitan las rutinas que buscan archivos en la carpeta actual.
 Clonar o descargar el repositorio en una carpeta estable. Por ejemplo:
 
 ```bash
-cd ~/Soft
-git clone <URL_DEL_REPOSITORIO> scripts
-cd scripts
+cd ~
+git clone <URL_DEL_REPOSITORIO> tolkien-tools
+cd tolkien-tools
 ```
 
 Instalar las dependencias Python principales y los paquetes opcionales del
@@ -66,13 +66,13 @@ poder llamarlo desde cualquier carpeta, asegurar que tenga permiso de ejecucion
 y agregar esa carpeta al `PATH` en `~/.bashrc`:
 
 ```bash
-chmod +x ~/Soft/scripts/tolkien-tools
-echo 'export PATH="$HOME/Soft/scripts:$PATH"' >> ~/.bashrc
+chmod +x ~/tolkien-tools/tolkien-tools
+echo 'export PATH="$HOME/tolkien-tools:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
 
 Si el repositorio se instalo en otra ubicacion, reemplazar
-`$HOME/Soft/scripts` por la ruta correspondiente.
+`$HOME/tolkien-tools` por la ruta correspondiente.
 
 Comprobar la instalacion:
 

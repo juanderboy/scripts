@@ -86,8 +86,9 @@ tolkien-tools 4   # multilambda kinetics
 Clone or download the repository into a stable location. For example:
 
 ```bash
-git clone <REPOSITORY_URL> scripts
-cd scripts
+cd ~
+git clone <REPOSITORY_URL> tolkien-tools
+cd tolkien-tools
 ```
 
 Install the required Python packages and the optional 3D viewer dependencies:
@@ -101,12 +102,12 @@ any working directory, make it executable and add the repository folder to
 your `PATH` in `~/.bashrc`:
 
 ```bash
-chmod +x ~/Soft/scripts/tolkien-tools
-echo 'export PATH="$HOME/Soft/scripts:$PATH"' >> ~/.bashrc
+chmod +x ~/tolkien-tools/tolkien-tools
+echo 'export PATH="$HOME/tolkien-tools:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-If the repository was cloned elsewhere, replace `$HOME/Soft/scripts` with the
+If the repository was cloned elsewhere, replace `$HOME/tolkien-tools` with the
 actual path. Confirm the installation with:
 
 ```bash
