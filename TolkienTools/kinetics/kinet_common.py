@@ -8,10 +8,19 @@ from dataclasses import dataclass
 import numpy as np
 
 
-MODEL_LABELS = {
+GENERAL_MODEL_LABELS = {
     "a_to_b": "A -> B irreversible de primer orden",
     "a_to_b_to_c": "A -> B -> C irreversible consecutivo",
     "a_rev_b_to_c": "A <-> B -> C",
+}
+
+SPECIAL_MODEL_LABELS = {
+    "mbfe3_sulfide_autocatalytic": "reduccion autocatalitica de MbFe(III) por sulfuros",
+}
+
+MODEL_LABELS = {
+    **GENERAL_MODEL_LABELS,
+    **SPECIAL_MODEL_LABELS,
 }
 
 
@@ -19,6 +28,7 @@ MODEL_SPECIES = {
     "a_to_b": ("A", "B"),
     "a_to_b_to_c": ("A", "B", "C"),
     "a_rev_b_to_c": ("A", "B", "C"),
+    "mbfe3_sulfide_autocatalytic": ("MbFeIII-SH", "MbFeII"),
 }
 
 
@@ -27,6 +37,75 @@ PARAMETER_LABELS = {
     "k1": "k1",
     "k_1": "k-1",
     "k2": "k2",
+    "k_slow": "k_slow,obs",
+    "k_auto": "k_auto",
+}
+
+
+MODEL_PRESENTATIONS = {
+    "a_to_b": {
+        "scheme": "A -> B",
+        "profiles": (
+            "[A](t) = c0 * exp(-k * t)",
+            "[B](t) = c0 - [A](t)",
+        ),
+        "parameters": (
+            "k: constante de velocidad de primer orden",
+        ),
+        "notes": (
+            "Se ajustan simultaneamente los espectros puros de A y B.",
+        ),
+    },
+    "a_to_b_to_c": {
+        "scheme": "A -> B -> C",
+        "profiles": (
+            "[A](t) = c0 * exp(-k1 * t)",
+            "[B](t) = c0 * k1/(k2-k1) * (exp(-k1*t) - exp(-k2*t))",
+            "[C](t) = c0 - [A](t) - [B](t)",
+        ),
+        "parameters": (
+            "k1: constante de velocidad para A -> B",
+            "k2: constante de velocidad para B -> C",
+        ),
+        "notes": (
+            "Si k1 y k2 coinciden, se usa el limite analitico correspondiente.",
+        ),
+    },
+    "a_rev_b_to_c": {
+        "scheme": "A <-> B -> C",
+        "profiles": (
+            "d[A]/dt = -k1*[A] + k-1*[B]",
+            "d[B]/dt = k1*[A] - (k-1+k2)*[B]",
+            "d[C]/dt = k2*[B]",
+        ),
+        "parameters": (
+            "k1: constante de velocidad para A -> B",
+            "k-1: constante de velocidad para B -> A",
+            "k2: constante de velocidad para B -> C",
+        ),
+        "notes": (
+            "Los perfiles temporales se calculan resolviendo el sistema lineal.",
+        ),
+    },
+    "mbfe3_sulfide_autocatalytic": {
+        "scheme": "MbFeIII-SH -> MbFeII, con aceleracion autocatalitica aparente",
+        "profiles": (
+            "x(t) = [MbFeII](t) / [Mb]total",
+            "dx/dt = (k_slow + k_auto*x) * (1 - x)",
+            "[MbFeIII-SH](t) = c0 * (1 - x)",
+            "[MbFeII](t) = c0 * x",
+        ),
+        "parameters": (
+            "k_slow,obs: constante aparente de la fase lenta inicial",
+            "k_auto: aceleracion fenomenologica aparente",
+        ),
+        "notes": (
+            "El ajuste usa todos los tiempos y dos especies absorbentes.",
+            "x actua como proxy de especies reactivas de azufre no observadas.",
+            "La dependencia de k_slow,obs con [HS-] debe determinarse experimentalmente.",
+            "k_auto no debe interpretarse directamente como k_Red(HSS-).",
+        ),
+    },
 }
 
 

@@ -8,7 +8,14 @@ from pathlib import Path
 
 import numpy as np
 
-from kinet_common import MODEL_LABELS, MODEL_SPECIES, PARAMETER_LABELS
+from kinet_common import (
+    GENERAL_MODEL_LABELS,
+    MODEL_LABELS,
+    MODEL_PRESENTATIONS,
+    MODEL_SPECIES,
+    PARAMETER_LABELS,
+    SPECIAL_MODEL_LABELS,
+)
 from kinet_export import export_final_fit_outputs
 from kinet_fitting import fit_model_with_auto_k_max, is_near_bound
 from kinet_io import read_experiment, resolve_input_file
@@ -47,25 +54,45 @@ def print_startup_banner() -> None:
 
 def ask_model_choice(default_model: str) -> str:
     """Ask for the kinetic model to use."""
-    model_keys = list(MODEL_LABELS)
     if default_model not in MODEL_LABELS:
         raise ValueError(f"Unknown kinetic model: {default_model}")
 
     print("Modelo cinetico:")
-    for i, key in enumerate(model_keys, start=1):
+    general_keys = list(GENERAL_MODEL_LABELS)
+    for i, key in enumerate(general_keys, start=1):
         marker = "default" if key == default_model else ""
         suffix = f" [{marker}]" if marker else ""
         print(f"  {i}. {MODEL_LABELS[key]}{suffix}")
+    special_index = len(general_keys) + 1
+    special_suffix = " [default]" if default_model in SPECIAL_MODEL_LABELS else ""
+    print(f"  {special_index}. Mecanismos especiales{special_suffix}")
 
     choice = input("Elegir modelo? Enter = default: ").strip()
     if not choice:
         return default_model
 
     index = int(choice)
-    if index < 1 or index > len(model_keys):
-        raise ValueError(f"Model choice must be between 1 and {len(model_keys)}")
+    if index < 1 or index > special_index:
+        raise ValueError(f"Model choice must be between 1 and {special_index}")
+    if index <= len(general_keys):
+        return general_keys[index - 1]
 
-    return model_keys[index - 1]
+    special_keys = list(SPECIAL_MODEL_LABELS)
+    print()
+    print("Mecanismos especiales:")
+    for i, key in enumerate(special_keys, start=1):
+        marker = "default" if key == default_model else ""
+        suffix = f" [{marker}]" if marker else ""
+        print(f"  {i}. {SPECIAL_MODEL_LABELS[key]}{suffix}")
+    special_choice = input("Elegir mecanismo especial? Enter = primero: ").strip()
+    if not special_choice:
+        return special_keys[0]
+    special_choice_index = int(special_choice)
+    if special_choice_index < 1 or special_choice_index > len(special_keys):
+        raise ValueError(
+            f"Special model choice must be between 1 and {len(special_keys)}"
+        )
+    return special_keys[special_choice_index - 1]
 
 
 
@@ -111,6 +138,25 @@ def ask_fit_method_choice(
         "Fit method choice must be one of: "
         + ", ".join(key for key, _ in available_methods)
     )
+
+
+def print_model_presentation(model: str) -> None:
+    """Print a compact description of the selected kinetic model."""
+    presentation = MODEL_PRESENTATIONS[model]
+    print()
+    print("Presentacion basica del modelo")
+    print(f"  Modelo: {MODEL_LABELS[model]}")
+    print(f"  Esquema: {presentation['scheme']}")
+    print("  Especies absorbentes ajustadas: " + ", ".join(MODEL_SPECIES[model]))
+    print("  Evolucion temporal:")
+    for line in presentation["profiles"]:
+        print(f"    {line}")
+    print("  Parametros:")
+    for line in presentation["parameters"]:
+        print(f"    {line}")
+    for line in presentation["notes"]:
+        print(f"  Nota: {line}")
+    print()
 
 
 def parse_known_spectrum_specs(texts: list[str]) -> list[KnownSpectrumSpec]:
@@ -193,6 +239,7 @@ def print_fit_report(
     args: argparse.Namespace,
     c0: float,
     reaction_start_time: float | None,
+    reaction_end_time: float | None,
     model: str,
 ) -> None:
     """Print the numerical summary for one fit."""
@@ -208,6 +255,8 @@ def print_fit_report(
     print(f"Time range: {experiment.t[0]:g} - {experiment.t[-1]:g}")
     if reaction_start_time is not None:
         print(f"reaction start time: {reaction_start_time:g} original time units")
+    if reaction_end_time is not None:
+        print(f"reaction end time: {reaction_end_time:g} original time units")
     print(f"c0: {c0:g} M")
     print(f"model: {MODEL_LABELS[model]}")
     print(f"fit method: {result.method}")
@@ -235,7 +284,8 @@ def print_fit_report(
                 f"{PARAMETER_LABELS.get(name, name)} reached the upper search bound"
             )
     if set(result.params) == {"k"}:
-        print(f"half-life: {np.log(2) / result.params['k']:.10g}")
+        fitted_k = next(iter(result.params.values()))
+        print(f"half-life: {np.log(2) / fitted_k:.10g}")
     print(f"fit error: {result.error:.10g}")
     print(f"minimum recovered spectrum value: {result.spectra.min():.10g}")
     print("first singular values:", " ".join(f"{x:.6g}" for x in result.singular_values[:10]))
@@ -315,6 +365,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Original time where the reaction starts. Spectra with t <= this "
             "value are discarded and remaining times are shifted by this value."
+        ),
+    )
+    parser.add_argument(
+        "--reaction-end-time",
+        type=float,
+        default=None,
+        help=(
+            "Optional original time where the fitted window ends. Useful for "
+            "diagnostic fits restricted to an initial phase."
         ),
     )
     parser.add_argument(
@@ -429,6 +488,7 @@ def main() -> None:
             baseline_window=args.baseline_window,
         )
         model = ask_model_choice(args.model)
+        print_model_presentation(model)
         if not known_specs:
             known_specs = ask_known_spectra_choice(model)
         fit_method = ask_fit_method_choice(
@@ -436,11 +496,13 @@ def main() -> None:
             model,
             has_known_spectra=bool(known_specs),
         )
+    else:
+        print_model_presentation(model)
 
     allowed_work_range = allowed_work_range_from_known_spectra(known_specs, experiment)
     print_allowed_work_range_report(allowed_work_range)
 
-    corrected, work_range, c0, reaction_start_time = preprocess_experiment(
+    corrected, work_range, c0, reaction_start_time, reaction_end_time = preprocess_experiment(
         args,
         experiment,
         allowed_work_range=allowed_work_range,
@@ -484,6 +546,7 @@ def main() -> None:
             args,
             c0,
             reaction_start_time,
+            reaction_end_time,
             model,
         )
 
@@ -512,6 +575,7 @@ def main() -> None:
         args,
         c0,
         reaction_start_time,
+        reaction_end_time,
         model,
         protected_input_paths=[spec.path for spec in known_specs],
     )

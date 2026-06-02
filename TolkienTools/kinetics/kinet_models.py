@@ -13,6 +13,35 @@ def concentration_profile_a_to_b(t: np.ndarray, k: float, c0: float = 1.0) -> np
     return np.vstack([a, b])
 
 
+def concentration_profile_mbfe3_sulfide_autocatalytic(
+    t: np.ndarray,
+    k_slow: float,
+    k_auto: float,
+    c0: float = 1.0,
+) -> np.ndarray:
+    """Global profiles for autocatalytic MbFeIII-SH reduction by sulfide.
+
+    The reduced fraction x follows:
+
+        dx/dt = (k_slow + k_auto * x) * (1 - x)
+
+    Reactive sulfur species are not observed directly. Their accumulation is
+    represented phenomenologically by x.
+    """
+    if k_slow <= 0 or k_auto <= 0:
+        raise ValueError("All kinetic constants must be positive")
+
+    decaying_exponent = np.exp(-(k_slow + k_auto) * t)
+    remaining_fraction = (
+        (k_slow + k_auto)
+        * decaying_exponent
+        / (k_auto * decaying_exponent + k_slow)
+    )
+    reduced_fraction = 1.0 - remaining_fraction
+    reduced_fraction = np.clip(reduced_fraction, 0.0, 1.0)
+    return np.vstack([c0 * (1.0 - reduced_fraction), c0 * reduced_fraction])
+
+
 
 def concentration_profile_a_to_b_to_c(
     t: np.ndarray,
@@ -57,4 +86,3 @@ def concentration_profile_a_rev_b_to_c(
     weights = np.linalg.solve(eigenvectors, initial)
     c = eigenvectors @ (weights[:, None] * np.exp(eigenvalues[:, None] * t[None, :]))
     return np.real_if_close(c, tol=1000).real
-

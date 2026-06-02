@@ -31,6 +31,14 @@ carpeta:
 - `kinet_plotting.py`: figuras exploratorias, diagnosticos y panel final.
 - `kinet_export.py`: archivos finales de concentraciones, espectros puros, resumen y PNG.
 
+Cada analisis escribe sus artefactos en una subcarpeta
+`results_<nombre-del-archivo>` junto al archivo de entrada, para no mezclar
+resultados con experimentos pendientes de procesar.
+
+Una vez elegido el modelo, la rutina imprime una presentacion basica con el
+esquema cinetico, las especies absorbentes, la evolucion temporal ajustada, los
+parametros y notas de interpretacion.
+
 El metodo `factor` esta implementado para `A -> B`, `A -> B -> C` y
 `A <-> B -> C`.
 Para `A -> B -> C`, el ajuste en espacio de factores identifica los dos
@@ -39,6 +47,27 @@ recuperados con menor contribucion negativa. En el mecanismo reversible, las
 constantes tienen roles distintos (`k1`, `k-1`, `k2`) y no se permutan. Este
 ultimo caso es mas sensible a correlaciones entre parametros; conviene usarlo
 como diagnostico y comparar siempre contra `nnls`.
+
+## Mecanismos especiales
+
+El menu de modelos incluye una categoria separada para analisis especificos de
+un sistema quimico. Actualmente contiene:
+
+- `reduccion autocatalitica de MbFe(III) por sulfuros`: ajusta globalmente
+  todos los tiempos como `dx/dt = (k_slow + k_auto * x) * (1 - x)`, donde `x`
+  es la fraccion de `MbFeII`. `k_slow,obs` describe la fase lenta inicial y
+  `k_auto` cuantifica la aceleracion aparente por especies reactivas de azufre.
+  La dependencia de `k_slow,obs` con `[HS-]` se debe determinar
+  experimentalmente antes de asignarle una interpretacion mecanistica.
+
+Ejemplo no interactivo:
+
+```bash
+tolkien-tools 4 experimento.dat \
+  --model mbfe3_sulfide_autocatalytic \
+  --baseline-mode none \
+  --no-plot
+```
 
 Backup previo a la separacion:
 

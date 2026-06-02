@@ -107,6 +107,29 @@ def start_reaction_at_time(
     )
 
 
+def end_reaction_at_time(
+    experiment: Experiment,
+    reaction_end_time: float | None,
+) -> Experiment:
+    """Keep spectra up to an optional end time in the original time units."""
+    if reaction_end_time is None:
+        return experiment
+    if not np.isfinite(reaction_end_time):
+        raise ValueError("Reaction end time must be finite")
+
+    mask = experiment.t <= reaction_end_time
+    if not np.any(mask):
+        raise ValueError(
+            f"Reaction end time {reaction_end_time:g} leaves no spectra with t <= t_end"
+        )
+
+    return Experiment(
+        t=experiment.t[mask],
+        wavelength=experiment.wavelength,
+        absorbance=experiment.absorbance[:, mask],
+    )
+
+
 
 def parse_spectrum_selection(selection: str, n_spectra: int) -> list[int]:
     """Parse 1-based spectrum indices such as '1,3-5'."""
@@ -204,6 +227,23 @@ def parse_reaction_start_time_choice(
     return reaction_start_time
 
 
+def parse_reaction_end_time_choice(
+    text: str,
+    default_reaction_end_time: float | None,
+) -> float | None:
+    """Parse the interactive reaction-end time choice."""
+    choice = text.strip().lower()
+    if not choice:
+        return default_reaction_end_time
+    if choice in {"none", "no", "n"}:
+        return None
+
+    reaction_end_time = float(choice)
+    if not np.isfinite(reaction_end_time):
+        raise ValueError("Reaction end time must be finite")
+    return reaction_end_time
+
+
 
 def crop_wavelengths(
     experiment: Experiment,
@@ -275,6 +315,7 @@ def apply_preprocessing_choices(
     experiment: Experiment,
     drop_indices: list[int],
     reaction_start_time: float | None,
+    reaction_end_time: float | None,
     baseline_mode: str,
     baseline_region: tuple[float, float] | None,
     baseline_points: int,
@@ -282,7 +323,10 @@ def apply_preprocessing_choices(
 ) -> tuple[Experiment, Experiment, tuple[float, float] | None]:
     """Apply spectrum/time pruning, baseline correction and wavelength crop."""
     pruned = drop_spectra(experiment, drop_indices)
+    pruned = end_reaction_at_time(pruned, reaction_end_time)
     pruned = start_reaction_at_time(pruned, reaction_start_time)
+    if pruned.t.size < 2:
+        raise ValueError("Time selection must leave at least two spectra")
     corrected_absorbance, used_region = corrected_absorbance_from_baseline_choice(
         pruned,
         baseline_mode,
@@ -307,9 +351,11 @@ def ask_preprocessing_choices(
     default_c0: float,
     baseline_window: float,
     default_reaction_start_time: float | None,
+    default_reaction_end_time: float | None,
     allowed_work_range: tuple[float, float] | None = None,
 ) -> tuple[
     list[int],
+    float | None,
     float | None,
     str,
     tuple[float, float] | None,
@@ -339,7 +385,23 @@ def ask_preprocessing_choices(
         start_text,
         default_reaction_start_time,
     )
+    if default_reaction_end_time is None:
+        end_default_text = "sin recorte"
+    else:
+        end_default_text = f"{default_reaction_end_time:g}"
+    end_text = input(
+        "Tiempo final para el ajuste? "
+        "Usa esta opcion para aislar una fase inicial. "
+        f"Se usan solo espectros con t <= t_final. Enter = {end_default_text}: "
+    )
+    reaction_end_time = parse_reaction_end_time_choice(
+        end_text,
+        default_reaction_end_time,
+    )
+    dropped = end_reaction_at_time(dropped, reaction_end_time)
     dropped = start_reaction_at_time(dropped, reaction_start_time)
+    if dropped.t.size < 2:
+        raise ValueError("Time selection must leave at least two spectra")
 
     auto_region = suggest_auto_baseline_region(
         dropped,
@@ -409,6 +471,7 @@ def ask_preprocessing_choices(
     return (
         drop_indices,
         reaction_start_time,
+        reaction_end_time,
         baseline_mode,
         baseline_region,
         baseline_points,
@@ -422,7 +485,7 @@ def preprocess_experiment(
     args: argparse.Namespace,
     experiment: Experiment,
     allowed_work_range: tuple[float, float] | None = None,
-) -> tuple[Experiment, tuple[float, float], float, float | None]:
+) -> tuple[Experiment, tuple[float, float], float, float | None, float | None]:
     """Apply optional spectrum removal and baseline correction."""
     drop_indices = parse_spectrum_selection(args.drop_spectra, experiment.t.size)
     work_range = tuple(sorted((args.lambda_min, args.lambda_max)))
@@ -440,6 +503,7 @@ def preprocess_experiment(
     baseline_mode = args.baseline_mode
     baseline_points = args.baseline_points
     reaction_start_time = args.reaction_start_time
+    reaction_end_time = args.reaction_end_time
 
     baseline_region = None
     if args.baseline_lambda_min is not None or args.baseline_lambda_max is not None:
@@ -458,17 +522,19 @@ def preprocess_experiment(
             experiment,
             drop_indices,
             reaction_start_time,
+            reaction_end_time,
             baseline_mode,
             baseline_region,
             baseline_points,
             work_range,
         )
-        return corrected, work_range, c0, reaction_start_time
+        return corrected, work_range, c0, reaction_start_time, reaction_end_time
 
     while True:
         (
             drop_indices,
             reaction_start_time,
+            reaction_end_time,
             baseline_mode,
             baseline_region,
             baseline_points,
@@ -481,6 +547,7 @@ def preprocess_experiment(
             default_c0=c0,
             baseline_window=args.baseline_window,
             default_reaction_start_time=reaction_start_time,
+            default_reaction_end_time=reaction_end_time,
             allowed_work_range=allowed_work_range,
         )
         corrected, cropped, used_region = apply_preprocessing_choices(
@@ -488,6 +555,7 @@ def preprocess_experiment(
             experiment,
             drop_indices,
             reaction_start_time,
+            reaction_end_time,
             baseline_mode,
             baseline_region,
             baseline_points,
@@ -503,13 +571,14 @@ def preprocess_experiment(
             used_region,
             baseline_points,
             reaction_start_time,
+            reaction_end_time,
         )
         approve = input(
             "Aprobar estos espectros para el ajuste? "
             "Enter/s = si, n = volver a elegir poda/baseline/rango: "
         ).strip().lower()
         if approve in {"", "s", "si", "sí", "y", "yes"}:
-            return corrected, work_range, c0, reaction_start_time
+            return corrected, work_range, c0, reaction_start_time, reaction_end_time
         if approve in {"n", "no"}:
             print()
             print("Volviendo a las opciones de preprocesado.")

@@ -15,7 +15,9 @@ from kinet_plotting import plot_result
 
 def output_prefix_from_input(path: Path) -> Path:
     """Return the file prefix used for exported fit artifacts."""
-    output_dir = path.parent if str(path.parent) else Path(".")
+    input_dir = path.parent if str(path.parent) else Path(".")
+    output_dir = input_dir / f"results_{path.stem}"
+    output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir / path.stem
 
 
@@ -30,6 +32,7 @@ def write_fit_summary_dat(
     args: argparse.Namespace,
     c0: float,
     reaction_start_time: float | None,
+    reaction_end_time: float | None,
     model: str,
 ) -> None:
     """Write a tab-separated summary of the final accepted fit."""
@@ -54,6 +57,8 @@ def write_fit_summary_dat(
     ]
     if reaction_start_time is not None:
         lines.append(f"reaction_start_time_original_units\t{reaction_start_time:.10g}")
+    if reaction_end_time is not None:
+        lines.append(f"reaction_end_time_original_units\t{reaction_end_time:.10g}")
     if args.initial_spectrum_weight > 0:
         lines.append(f"initial_spectrum_weight\t{args.initial_spectrum_weight:.10g}")
     if result.known_species:
@@ -64,7 +69,8 @@ def write_fit_summary_dat(
     for name, value in result.params.items():
         lines.append(f"{PARAMETER_LABELS.get(name, name)}\t{value:.10g}")
     if set(result.params) == {"k"}:
-        lines.append(f"half_life\t{np.log(2) / result.params['k']:.10g}")
+        fitted_k = next(iter(result.params.values()))
+        lines.append(f"half_life\t{np.log(2) / fitted_k:.10g}")
     lines.append("species\t" + ",".join(result.species_labels))
     lines.append(
         "singular_values\t"
@@ -83,6 +89,7 @@ def export_final_fit_outputs(
     args: argparse.Namespace,
     c0: float,
     reaction_start_time: float | None,
+    reaction_end_time: float | None,
     model: str,
     protected_input_paths: list[Path] | None = None,
 ) -> None:
@@ -134,6 +141,7 @@ def export_final_fit_outputs(
         args,
         c0,
         reaction_start_time,
+        reaction_end_time,
         model,
     )
     plot_result(

@@ -380,6 +380,7 @@ def plot_experiment_overview(
         "Use this overview to choose:\n"
         "- spectra to discard\n"
         "- reaction start time\n"
+        "- optional reaction end time for an initial-phase fit\n"
         "- baseline correction mode/region\n"
         "- wavelength range for the fit\n\n"
         "Hover over spectra in the spectral panels to read spectrum number and time.",
@@ -440,6 +441,7 @@ def plot_preprocessed_experiment_preview(
     baseline_region: tuple[float, float] | None,
     baseline_points: int,
     reaction_start_time: float | None,
+    reaction_end_time: float | None,
 ) -> None:
     """Show the spectra that will be passed to the kinetic fit."""
     import sys
@@ -466,9 +468,13 @@ def plot_preprocessed_experiment_preview(
         start_text = "no reaction-start cut"
     else:
         start_text = f"t_start = {reaction_start_time:g}"
+    if reaction_end_time is None:
+        end_text = "no reaction-end cut"
+    else:
+        end_text = f"t_end = {reaction_end_time:g}"
     fig.suptitle(
         "Preprocessed spectra proposed for fitting | "
-        f"baseline: {baseline_text} | {start_text}"
+        f"baseline: {baseline_text} | {start_text} | {end_text}"
     )
 
     plot_time_colored_spectra(
@@ -544,7 +550,7 @@ def plot_result(
         "Baseline-corrected spectra",
         ax=axes["spectra"],
     )
-    if result.model == "a_to_b":
+    if result.model in {"a_to_b", "mbfe3_sulfide_autocatalytic"}:
         add_two_species_direction_guides(axes["spectra"], experiment)
 
     ax_overlay = axes["fit_overlay"]
