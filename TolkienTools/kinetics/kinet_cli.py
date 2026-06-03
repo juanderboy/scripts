@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -27,6 +29,67 @@ from kinet_known_spectra import (
 )
 from kinet_plotting import plot_experiment_overview, plot_result, print_exploration_message
 from kinet_preprocessing import crop_wavelengths, drop_spectra, parse_spectrum_selection, preprocess_experiment
+
+
+class FitProgress:
+    """Small terminal progress indicator for optimizer objective evaluations."""
+
+    def __init__(self, enabled: bool = True, update_interval: float = 0.5) -> None:
+        self.enabled = enabled
+        self.update_interval = update_interval
+        self.started = time.monotonic()
+        self.last_update = 0.0
+        self.evaluations = 0
+        self.best_error = np.inf
+        self.best_params: dict[str, float] = {}
+
+    def __call__(self, params: dict[str, float], error: float) -> None:
+        if not self.enabled:
+            return
+        self.evaluations += 1
+        if np.isfinite(error) and error < self.best_error:
+            self.best_error = error
+            self.best_params = params.copy()
+
+        now = time.monotonic()
+        if self.evaluations > 1 and now - self.last_update < self.update_interval:
+            return
+        self.last_update = now
+        self._write_line(done=False)
+
+    def finish(self) -> None:
+        if not self.enabled:
+            return
+        self._write_line(done=True)
+        sys.stderr.write("\n")
+        sys.stderr.flush()
+
+    def _write_line(self, done: bool) -> None:
+        elapsed = time.monotonic() - self.started
+        width = 18
+        if done:
+            bar = "[" + "=" * width + "]"
+        else:
+            position = (self.evaluations // 3) % width
+            bar = "[" + "." * position + ">" + "." * (width - position - 1) + "]"
+        best = (
+            "best n/a"
+            if not np.isfinite(self.best_error)
+            else f"best {self.best_error:.6g}"
+        )
+        params = " ".join(
+            f"{PARAMETER_LABELS.get(name, name)}={value:.4g}"
+            for name, value in self.best_params.items()
+        )
+        status = "done" if done else "fitting"
+        line = (
+            f"\r{bar} {status}: eval {self.evaluations}  "
+            f"{best}  elapsed {elapsed:.1f}s"
+        )
+        if params:
+            line += f"  {params}"
+        sys.stderr.write(line[:180].ljust(180))
+        sys.stderr.flush()
 
 
 def print_startup_banner() -> None:
@@ -461,6 +524,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--no-plot", action="store_true")
     parser.add_argument(
+        "--no-fit-progress",
+        action="store_true",
+        help="Do not show optimizer progress while fitting",
+    )
+    parser.add_argument(
         "--skip-preprocess-dialog",
         action="store_true",
         help="Do not show the initial raw spectra dialog before preprocessing",
@@ -523,20 +591,26 @@ def main() -> None:
 
     fit_experiment = cropped
     while True:
-        result, final_k_bounds = fit_model_with_auto_k_max(
-            model,
-            fit_experiment,
-            c0=c0,
-            n_components=n_components,
-            method=fit_method,
-            k_bounds=(args.k_min, args.k_max),
-            auto_expand=args.auto_expand_k_max,
-            expand_factor=args.k_max_expand_factor,
-            max_expand_steps=args.k_max_expand_steps,
-            initial_spectrum_weight=args.initial_spectrum_weight,
-            known_spectra=known_spectra,
-            known_species=known_species,
-        )
+        sys.stdout.flush()
+        progress = FitProgress(enabled=not args.no_fit_progress)
+        try:
+            result, final_k_bounds = fit_model_with_auto_k_max(
+                model,
+                fit_experiment,
+                c0=c0,
+                n_components=n_components,
+                method=fit_method,
+                k_bounds=(args.k_min, args.k_max),
+                auto_expand=args.auto_expand_k_max,
+                expand_factor=args.k_max_expand_factor,
+                max_expand_steps=args.k_max_expand_steps,
+                initial_spectrum_weight=args.initial_spectrum_weight,
+                known_spectra=known_spectra,
+                known_species=known_species,
+                progress_callback=progress,
+            )
+        finally:
+            progress.finish()
 
         print_fit_report(
             input_path,

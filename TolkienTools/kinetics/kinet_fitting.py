@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import numpy as np
 from scipy.optimize import minimize, minimize_scalar, nnls
 
@@ -15,6 +17,54 @@ from kinet_models import (
     concentration_profile_mbfe3_sulfide_binding_autocatalytic,
     concentration_profile_mbfe3_sulfide_autocatalytic,
 )
+
+ProgressCallback = Callable[[dict[str, float], float], None]
+
+
+def solve_small_nnls_batch(design: np.ndarray, target: np.ndarray) -> np.ndarray:
+    """Solve many small NNLS problems by enumerating active species sets.
+
+    The spectral fits use very few species, usually two or three. For that
+    regime, checking every active subset is much faster than calling scipy.nnls
+    once per wavelength, and it gives the same convex least-squares solution.
+    """
+    n_free = design.shape[1]
+    if n_free == 0:
+        return np.empty((target.shape[0], 0))
+    if n_free > 8:
+        spectra = np.zeros((target.shape[0], n_free))
+        for i, row in enumerate(target):
+            spectra[i, :], _ = nnls(design, row)
+        return spectra
+
+    best_spectra = np.zeros((target.shape[0], n_free))
+    best_error = np.sum(target**2, axis=1)
+    tolerance = 1e-12
+
+    for active_bits in range(1, 1 << n_free):
+        active = np.array(
+            [(active_bits >> index) & 1 for index in range(n_free)],
+            dtype=bool,
+        )
+        active_design = design[:, active]
+        active_solution = target @ np.linalg.pinv(active_design).T
+        valid = np.all(active_solution >= -tolerance, axis=1)
+        if not np.any(valid):
+            continue
+
+        active_solution = np.maximum(active_solution, 0.0)
+        residual = target - active_solution @ active_design.T
+        error = np.sum(residual**2, axis=1)
+        improved = valid & (error < best_error)
+        if not np.any(improved):
+            continue
+
+        candidate = np.zeros((int(np.count_nonzero(improved)), n_free))
+        candidate[:, active] = active_solution[improved]
+        best_spectra[improved] = candidate
+        best_error[improved] = error[improved]
+
+    return best_spectra
 
 
 def factor_space_error(k: float, t: np.ndarray, w: np.ndarray, c0: float) -> float:
@@ -125,8 +175,7 @@ def fit_direct_spectra(
         spectra[:, free_mask] = (np.linalg.pinv(design) @ target.T).T
         return spectra
 
-    for i, row in enumerate(target):
-        spectra[i, free_mask], _ = nnls(design, row)
+    spectra[:, free_mask] = solve_small_nnls_batch(design, target)
     return spectra
 
 
@@ -282,8 +331,12 @@ def optimize_kinetic_parameters(
     parameter_names: tuple[str, ...],
     k_bounds: tuple[float, float],
     parameter_bounds: dict[str, tuple[float, float]] | None = None,
+    progress_callback: ProgressCallback | None = None,
+    optimizer: str = "hybrid",
 ) -> dict[str, float]:
     """Minimize an objective as a function of multiple positive constants."""
+    if optimizer not in {"hybrid", "powell"}:
+        raise ValueError(f"Unknown kinetic optimizer: {optimizer}")
     k_min, k_max = validate_k_bounds(k_bounds)
     parameter_bounds = parameter_bounds or {}
     bounds: list[tuple[float, float]] = []
@@ -313,10 +366,25 @@ def optimize_kinetic_parameters(
             name: float(np.exp(value))
             for name, value in zip(parameter_names, log_params)
         }
-        return objective_for_params(params)
+        value = float(objective_for_params(params))
+        if progress_callback is not None:
+            progress_callback(params, value)
+        return value
 
     for start in starts:
         clipped_start = np.clip(start, lower, upper)
+        if optimizer == "powell":
+            opt = minimize(
+                objective,
+                clipped_start,
+                method="Powell",
+                bounds=log_bounds,
+                options={"ftol": 1e-6, "xtol": 1e-6, "maxiter": 1000},
+            )
+            if best is None or opt.fun < best.fun:
+                best = opt
+            continue
+
         opt = minimize(
             objective,
             clipped_start,
@@ -515,6 +583,7 @@ def fit_a_to_b_direct(
     known_species: tuple[str, ...] = (),
     result_model: str = "a_to_b",
     concentration_profile=concentration_profile_a_to_b,
+    progress_callback: ProgressCallback | None = None,
 ) -> FitResult:
     """Fit A -> B by direct reconstruction with NNLS or pseudoinverse spectra."""
     q, w, singular_values = factor_analysis(experiment.absorbance, n_components)
@@ -548,6 +617,8 @@ def fit_a_to_b_direct(
         parameter_names,
         k_bounds,
         parameter_bounds=parameter_bounds,
+        progress_callback=progress_callback,
+        optimizer="powell" if spectra_method == "nnls" else "hybrid",
     )
     known_scale_report = extract_known_scale_report(params, known_species)
     known_scale_by_index = known_scale_parameters(params, result_model, known_species)
@@ -600,6 +671,7 @@ def fit_a_to_b(
     initial_spectrum_weight: float = 0.0,
     known_spectra: np.ndarray | None = None,
     known_species: tuple[str, ...] = (),
+    progress_callback: ProgressCallback | None = None,
 ) -> FitResult:
     """Dispatch between available A -> B fitting methods."""
     if method in {"nnls", "pinv"}:
@@ -612,6 +684,7 @@ def fit_a_to_b(
             initial_spectrum_weight=initial_spectrum_weight,
             known_spectra=known_spectra,
             known_species=known_species,
+            progress_callback=progress_callback,
         )
     if method == "factor":
         return fit_a_to_b_factor(
@@ -632,6 +705,7 @@ def fit_mbfe3_sulfide_autocatalytic(
     initial_spectrum_weight: float = 0.0,
     known_spectra: np.ndarray | None = None,
     known_species: tuple[str, ...] = (),
+    progress_callback: ProgressCallback | None = None,
 ) -> FitResult:
     """Fit global autocatalytic MbFeIII-SH reduction by sulfide."""
     if method == "factor":
@@ -673,6 +747,8 @@ def fit_mbfe3_sulfide_autocatalytic(
         parameter_names,
         k_bounds,
         parameter_bounds=parameter_bounds,
+        progress_callback=progress_callback,
+        optimizer="powell" if method == "nnls" else "hybrid",
     )
     known_scale_report = extract_known_scale_report(params, known_species)
     known_scale_by_index = known_scale_parameters(
@@ -732,6 +808,7 @@ def fit_mbfe3_sulfide_binding_autocatalytic(
     initial_spectrum_weight: float = 0.0,
     known_spectra: np.ndarray | None = None,
     known_species: tuple[str, ...] = (),
+    progress_callback: ProgressCallback | None = None,
 ) -> FitResult:
     """Fit MbFeIII binding HS- before autocatalytic sulfide reduction."""
     if method == "factor":
@@ -776,6 +853,8 @@ def fit_mbfe3_sulfide_binding_autocatalytic(
         parameter_names,
         k_bounds,
         parameter_bounds=parameter_bounds,
+        progress_callback=progress_callback,
+        optimizer="powell" if method == "nnls" else "hybrid",
     )
     known_scale_report = extract_known_scale_report(params, known_species)
     known_scale_by_index = known_scale_parameters(
@@ -837,6 +916,7 @@ def fit_a_to_b_to_c_direct(
     initial_spectrum_weight: float = 0.0,
     known_spectra: np.ndarray | None = None,
     known_species: tuple[str, ...] = (),
+    progress_callback: ProgressCallback | None = None,
 ) -> FitResult:
     """Fit A -> B -> C by direct reconstruction with NNLS or pseudoinverse spectra."""
     q, w, singular_values = factor_analysis(experiment.absorbance, n_components)
@@ -874,6 +954,8 @@ def fit_a_to_b_to_c_direct(
         parameter_names,
         k_bounds,
         parameter_bounds=parameter_bounds,
+        progress_callback=progress_callback,
+        optimizer="powell" if spectra_method == "nnls" else "hybrid",
     )
     known_scale_report = extract_known_scale_report(params, known_species)
     known_scale_by_index = known_scale_parameters(params, "a_to_b_to_c", known_species)
@@ -1041,6 +1123,7 @@ def fit_a_rev_b_to_c_direct(
     initial_spectrum_weight: float = 0.0,
     known_spectra: np.ndarray | None = None,
     known_species: tuple[str, ...] = (),
+    progress_callback: ProgressCallback | None = None,
 ) -> FitResult:
     """Fit A <-> B -> C by direct reconstruction with NNLS or pseudoinverse spectra."""
     q, w, singular_values = factor_analysis(experiment.absorbance, n_components)
@@ -1079,6 +1162,8 @@ def fit_a_rev_b_to_c_direct(
         parameter_names,
         k_bounds,
         parameter_bounds=parameter_bounds,
+        progress_callback=progress_callback,
+        optimizer="powell" if spectra_method == "nnls" else "hybrid",
     )
     known_scale_report = extract_known_scale_report(params, known_species)
     known_scale_by_index = known_scale_parameters(params, "a_rev_b_to_c", known_species)
@@ -1216,6 +1301,7 @@ def fit_model(
     initial_spectrum_weight: float = 0.0,
     known_spectra: np.ndarray | None = None,
     known_species: tuple[str, ...] = (),
+    progress_callback: ProgressCallback | None = None,
 ) -> FitResult:
     """Fit the selected kinetic model."""
     if initial_spectrum_weight < 0:
@@ -1237,6 +1323,7 @@ def fit_model(
             initial_spectrum_weight=initial_spectrum_weight,
             known_spectra=known_spectra,
             known_species=known_species,
+            progress_callback=progress_callback,
         )
     if model == "mbfe3_sulfide_autocatalytic":
         return fit_mbfe3_sulfide_autocatalytic(
@@ -1248,6 +1335,7 @@ def fit_model(
             initial_spectrum_weight=initial_spectrum_weight,
             known_spectra=known_spectra,
             known_species=known_species,
+            progress_callback=progress_callback,
         )
     if model == "mbfe3_sulfide_binding_autocatalytic":
         return fit_mbfe3_sulfide_binding_autocatalytic(
@@ -1259,6 +1347,7 @@ def fit_model(
             initial_spectrum_weight=initial_spectrum_weight,
             known_spectra=known_spectra,
             known_species=known_species,
+            progress_callback=progress_callback,
         )
     if model == "a_rev_b_to_c":
         if method == "factor":
@@ -1277,6 +1366,7 @@ def fit_model(
             initial_spectrum_weight=initial_spectrum_weight,
             known_spectra=known_spectra,
             known_species=known_species,
+            progress_callback=progress_callback,
         )
     if model == "a_to_b_to_c":
         if method == "factor":
@@ -1295,6 +1385,7 @@ def fit_model(
             initial_spectrum_weight=initial_spectrum_weight,
             known_spectra=known_spectra,
             known_species=known_species,
+            progress_callback=progress_callback,
         )
     raise ValueError(f"Unknown kinetic model: {model}")
 
@@ -1329,6 +1420,7 @@ def fit_model_with_auto_k_max(
     initial_spectrum_weight: float = 0.0,
     known_spectra: np.ndarray | None = None,
     known_species: tuple[str, ...] = (),
+    progress_callback: ProgressCallback | None = None,
 ) -> tuple[FitResult, tuple[float, float]]:
     """Fit a model, expanding the upper k bound when fitted constants hit it."""
     k_min, k_max = validate_k_bounds(k_bounds)
@@ -1347,6 +1439,7 @@ def fit_model_with_auto_k_max(
         initial_spectrum_weight=initial_spectrum_weight,
         known_spectra=known_spectra,
         known_species=known_species,
+        progress_callback=progress_callback,
     )
 
     if not auto_expand:
@@ -1377,6 +1470,7 @@ def fit_model_with_auto_k_max(
             initial_spectrum_weight=initial_spectrum_weight,
             known_spectra=known_spectra,
             known_species=known_species,
+            progress_callback=progress_callback,
         )
 
     return result, (k_min, k_max)
