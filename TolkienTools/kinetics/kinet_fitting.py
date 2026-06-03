@@ -12,6 +12,7 @@ from kinet_models import (
     concentration_profile_a_rev_b_to_c,
     concentration_profile_a_to_b,
     concentration_profile_a_to_b_to_c,
+    concentration_profile_mbfe3_sulfide_binding_autocatalytic,
     concentration_profile_mbfe3_sulfide_autocatalytic,
 )
 
@@ -722,6 +723,110 @@ def fit_mbfe3_sulfide_autocatalytic(
     )
 
 
+def fit_mbfe3_sulfide_binding_autocatalytic(
+    experiment: Experiment,
+    c0: float = 1.0,
+    n_components: int = 3,
+    method: str = "nnls",
+    k_bounds: tuple[float, float] = (1e-8, 1e-1),
+    initial_spectrum_weight: float = 0.0,
+    known_spectra: np.ndarray | None = None,
+    known_species: tuple[str, ...] = (),
+) -> FitResult:
+    """Fit MbFeIII binding HS- before autocatalytic sulfide reduction."""
+    if method == "factor":
+        raise ValueError(
+            "The MbFeIII sulfide binding/autocatalytic fit requires --fit-method nnls or pinv"
+        )
+    q, w, singular_values = factor_analysis(experiment.absorbance, n_components)
+    if n_components != 3:
+        raise ValueError(
+            "The MbFeIII sulfide binding/autocatalytic fit requires exactly 3 components."
+        )
+
+    parameter_names, parameter_bounds = direct_parameter_names_and_bounds(
+        ("k_on", "k_slow", "k_auto"),
+        known_species,
+        k_bounds,
+    )
+
+    def objective(params: dict[str, float]) -> float:
+        c_trial = concentration_profile_mbfe3_sulfide_binding_autocatalytic(
+            experiment.t,
+            params["k_on"],
+            params["k_slow"],
+            params["k_auto"],
+            c0=c0,
+        )
+        return direct_spectral_error_for_concentrations(
+            c_trial,
+            experiment,
+            spectra_method=method,
+            initial_spectrum_weight=initial_spectrum_weight,
+            known_spectra=known_spectra,
+            known_spectrum_scales=known_scale_parameters(
+                params,
+                "mbfe3_sulfide_binding_autocatalytic",
+                known_species,
+            ),
+        )
+
+    params = optimize_kinetic_parameters(
+        objective,
+        parameter_names,
+        k_bounds,
+        parameter_bounds=parameter_bounds,
+    )
+    known_scale_report = extract_known_scale_report(params, known_species)
+    known_scale_by_index = known_scale_parameters(
+        params,
+        "mbfe3_sulfide_binding_autocatalytic",
+        known_species,
+    )
+    c = concentration_profile_mbfe3_sulfide_binding_autocatalytic(
+        experiment.t,
+        params["k_on"],
+        params["k_slow"],
+        params["k_auto"],
+        c0=c0,
+    )
+    spectra = fit_direct_spectra(
+        experiment.absorbance,
+        c,
+        spectra_method=method,
+        initial_spectrum_weight=initial_spectrum_weight,
+        known_spectra=known_spectra,
+        known_spectrum_scales=known_scale_by_index,
+    )
+    absorbance_calc = spectra @ c
+    residuals = experiment.absorbance - absorbance_calc
+    error = direct_spectral_error_for_concentrations(
+        c,
+        experiment,
+        spectra_method=method,
+        initial_spectrum_weight=initial_spectrum_weight,
+        known_spectra=known_spectra,
+        known_spectrum_scales=known_scale_by_index,
+    )
+
+    return FitResult(
+        method=method,
+        model="mbfe3_sulfide_binding_autocatalytic",
+        params={name: params[name] for name in ("k_on", "k_slow", "k_auto")},
+        species_labels=MODEL_SPECIES["mbfe3_sulfide_binding_autocatalytic"],
+        c=c,
+        spectra=spectra,
+        absorbance_calc=absorbance_calc,
+        residuals=residuals,
+        singular_values=singular_values,
+        q=q,
+        w=w,
+        error=error,
+        known_species=known_species,
+        known_spectrum_scales=known_scale_report,
+    )
+
+
 
 def fit_a_to_b_to_c_direct(
     experiment: Experiment,
@@ -1135,6 +1240,17 @@ def fit_model(
         )
     if model == "mbfe3_sulfide_autocatalytic":
         return fit_mbfe3_sulfide_autocatalytic(
+            experiment,
+            c0=c0,
+            n_components=n_components,
+            method=method,
+            k_bounds=k_bounds,
+            initial_spectrum_weight=initial_spectrum_weight,
+            known_spectra=known_spectra,
+            known_species=known_species,
+        )
+    if model == "mbfe3_sulfide_binding_autocatalytic":
+        return fit_mbfe3_sulfide_binding_autocatalytic(
             experiment,
             c0=c0,
             n_components=n_components,

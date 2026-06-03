@@ -16,6 +16,9 @@ GENERAL_MODEL_LABELS = {
 
 SPECIAL_MODEL_LABELS = {
     "mbfe3_sulfide_autocatalytic": "reduccion autocatalitica de MbFe(III) por sulfuros",
+    "mbfe3_sulfide_binding_autocatalytic": (
+        "reduccion autocatalitica de MbFe(III) por sulfuros con binding inicial"
+    ),
 }
 
 MODEL_LABELS = {
@@ -29,6 +32,7 @@ MODEL_SPECIES = {
     "a_to_b_to_c": ("A", "B", "C"),
     "a_rev_b_to_c": ("A", "B", "C"),
     "mbfe3_sulfide_autocatalytic": ("MbFeIII-SH", "MbFeII"),
+    "mbfe3_sulfide_binding_autocatalytic": ("MbFeIII", "MbFeIII-HS", "MbFeII"),
 }
 
 
@@ -37,6 +41,7 @@ PARAMETER_LABELS = {
     "k1": "k1",
     "k_1": "k-1",
     "k2": "k2",
+    "k_on": "k_on",
     "k_slow": "k_slow,obs",
     "k_auto": "k_auto",
 }
@@ -103,6 +108,38 @@ MODEL_PRESENTATIONS = {
             "El ajuste usa todos los tiempos y dos especies absorbentes.",
             "x actua como proxy de especies reactivas de azufre no observadas.",
             "La dependencia de k_slow,obs con [HS-] debe determinarse experimentalmente.",
+            "k_auto no debe interpretarse directamente como k_Red(HSS-).",
+        ),
+    },
+    "mbfe3_sulfide_binding_autocatalytic": {
+        "scheme": (
+            "MbFeIII + HS- -> MbFeIII-HS -> MbFeII, "
+            "con aceleracion autocatalitica aparente"
+        ),
+        "profiles": (
+            "d[MbFeIII]/dt = -k_on * [MbFeIII]",
+            "x(t) = [MbFeII](t) / [Mb]total",
+            (
+                "d[MbFeIII-HS]/dt = k_on*[MbFeIII] "
+                "- (k_slow + k_auto*x)*[MbFeIII-HS]"
+            ),
+            "d[MbFeII]/dt = (k_slow + k_auto*x)*[MbFeIII-HS]",
+        ),
+        "parameters": (
+            (
+                "k_on: constante aparente de coordinacion por HS- "
+                "bajo las condiciones del experimento"
+            ),
+            "k_slow,obs: constante aparente de reduccion lenta del complejo MbFeIII-HS",
+            "k_auto: aceleracion fenomenologica aparente",
+        ),
+        "notes": (
+            "El ajuste usa tres especies absorbentes: MbFeIII, MbFeIII-HS y MbFeII.",
+            (
+                "Si [HS-] se mantiene en exceso, k_on corresponde al k_on "
+                "bimolecular multiplicado por [HS-]."
+            ),
+            "x actua como proxy de especies reactivas de azufre no observadas.",
             "k_auto no debe interpretarse directamente como k_Red(HSS-).",
         ),
     },
