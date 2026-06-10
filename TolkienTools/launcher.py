@@ -48,11 +48,7 @@ TOOLS = (
 MD_SUBCOMMANDS = (
     (
         "inspect",
-        "Revisar segmentos, frames, tiempos y archivos disponibles.",
-    ),
-    (
-        "merge-xyz",
-        "Unir los qm.xyz de una corrida fragmentada.",
+        "Revisar segmentos, frames y tiempos; despues ofrece mergear el XYZ.",
     ),
     (
         "geom",
@@ -68,7 +64,7 @@ MD_SUBCOMMANDS = (
     ),
     (
         "split-nc",
-        "Extraer snapshots rst7 desde QM_*.nc usando cpptraj.",
+        "Inspeccionar QM_*.nc fragmentados y generar restarts muestreados.",
     ),
 )
 
@@ -99,11 +95,11 @@ Programas externos:
 Archivos esperados por rutina:
   1. Molecular dynamics processing
      - Trabaja sobre corridas fragmentadas en subcarpetas numericas 1, 2, 3...
-     - Puede inspeccionar segmentos, unir qm.xyz, analizar geometria, unir
-       poblaciones y extraer rst7 desde QM_*.nc usando cpptraj.
+     - Puede inspeccionar segmentos y unir qm.xyz, analizar geometria, unir
+       poblaciones y generar rst7 muestreados desde QM_*.nc usando cpptraj.
      - El analisis geometrico puede generar un visor 3D HTML con py3Dmol o
        Plotly si estan instalados.
-     - Subcomandos: inspect, merge-xyz, geom, merge-pop, spin-ts, split-nc.
+     - Subcomandos: inspect, geom, merge-pop, spin-ts, split-nc.
 
   2. TD-DFT spectra
      - Lee salidas TD-DFT de ORCA, normalmente archivos TD_*.out.
@@ -272,12 +268,22 @@ def prompt_md_processing_choice() -> tuple[str, list[str] | None]:
             raise ValueError("Los atomos deben ser indices enteros separados por espacios.")
         args.extend(["--atoms", *atoms.split()])
     elif command == "split-nc":
-        prmtop = input("Archivo prmtop (Enter = cancelar): ").strip()
-        if not prmtop:
-            return "cancel", None
         nc_pattern = input("Patron de trayectorias NetCDF (Enter = QM_*.nc): ").strip() or "QM_*.nc"
-        frames = input("Frames a extraer (Enter = all): ").strip() or "all"
-        args.extend([prmtop, nc_pattern, frames])
+        skip_initial_ps = input("Ignorar frames iniciales antes de cuantos ps? (Enter = preguntar despues): ").strip()
+        count = input("Cantidad de rst7 a generar (Enter = preguntar despues de inspeccionar): ").strip()
+        if nc_pattern != "QM_*.nc":
+            args.extend(["--nc-pattern", nc_pattern])
+        if skip_initial_ps:
+            try:
+                if float(skip_initial_ps) < 0.0:
+                    raise ValueError
+            except ValueError as exc:
+                raise ValueError("El tiempo inicial a ignorar debe ser un numero >= 0.") from exc
+            args.extend(["--skip-initial-ps", skip_initial_ps])
+        if count:
+            if not count.isdigit():
+                raise ValueError("La cantidad de rst7 debe ser un entero.")
+            args.extend(["--count", count])
     return "launch", args
 
 

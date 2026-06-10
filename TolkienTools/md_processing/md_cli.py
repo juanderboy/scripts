@@ -4,16 +4,19 @@
 from __future__ import annotations
 
 import argparse
+import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
-from md_common import discover_segments
+from md_common import discover_segments, find_numeric_dirs, parse_d_qm_input
 from md_geometry import analyze_xyz, parse_metric_spec, parse_scatter_pairs
 from md_viewer import write_xyz_viewer
-from md_xyz import merge_segment_xyz, xyz_summary
+from md_xyz import merge_segment_xyz, parse_xyz_frames, xyz_summary
 
 
 POPULATION_DEFAULTS = ("mulliken", "mulliken_spin", "lowdin", "lowdin_spin")
@@ -23,6 +26,26 @@ LIO_FRAGMENT_ALIASES = {
 }
 
 
+@dataclass(frozen=True)
+class NcTrajectory:
+    segment: int
+    path: Path
+    frames: int
+    ntwx: int
+    dt_ps: float
+    xyz_path: Path
+
+
+@dataclass(frozen=True)
+class SelectedSnapshot:
+    output_index: int
+    global_nc_frame: int
+    time_ps: float
+    trajectory: NcTrajectory
+    local_nc_frame: int
+    qm_dynamic_frame: int
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         formatter_class=argparse.RawTextHelpFormatter,
@@ -30,11 +53,11 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "Ejemplos:\n"
             "  tolkien-tools md inspect\n"
-            "  tolkien-tools md merge-xyz --out qm_completo.xyz\n"
+            "  tolkien-tools md inspect --merge yes --exclude 2,5-7 --out qm_completo.xyz\n"
             "  tolkien-tools md geom --metric dFeN:distance:9,10\n"
             "  tolkien-tools md merge-pop --sources mulliken mulliken_spin\n"
             "  tolkien-tools md spin-ts --source mulliken_spin --atoms 9 10\n"
-            "  tolkien-tools md split-nc sistema.prmtop 'QM_*.nc' 250-300\n"
+            "  tolkien-tools md split-nc --count 100\n"
         ),
     )
     subparsers = parser.add_subparsers(dest="command")
@@ -43,6 +66,18 @@ def build_parser() -> argparse.ArgumentParser:
     add_root_args(inspect_p)
     inspect_p.add_argument("--xyz-name", default="qm.xyz")
     inspect_p.add_argument("--input-name", default="d_QM.in")
+    inspect_p.add_argument("--out", default="qm_completo.xyz", help="XYZ combinado si se decide mergear")
+    inspect_p.add_argument(
+        "--merge",
+        choices=["ask", "yes", "no"],
+        default="ask",
+        help="Luego de inspeccionar: preguntar, mergear automaticamente o no mergear",
+    )
+    inspect_p.add_argument(
+        "--exclude",
+        default="",
+        help="Segmentos a excluir del merge. Ej: 2,5-7",
+    )
 
     merge_xyz_p = subparsers.add_parser("merge-xyz", help="Une qm.xyz de carpetas numericas")
     add_root_args(merge_xyz_p)
@@ -79,12 +114,23 @@ def build_parser() -> argparse.ArgumentParser:
     spin_p.add_argument("--dt", type=float, help="Paso temporal entre frames en ps; si se omite se infiere de d_QM.in")
     spin_p.add_argument("--out", default="spin_timeseries.dat")
 
-    split_p = subparsers.add_parser("split-nc", help="Extrae rst7 desde trayectorias NetCDF usando cpptraj")
-    split_p.add_argument("prmtop")
-    split_p.add_argument("nc_pattern")
-    split_p.add_argument("frames", nargs="?", default="all", help="all, N, A-B, N-end o lista separada por coma")
+    split_p = subparsers.add_parser("split-nc", help="Inspecciona NetCDF fragmentados y extrae rst7 con cpptraj")
+    split_p.add_argument("prmtop", nargs="?", help="Topologia AMBER .prmtop; si se omite se busca automaticamente")
+    split_p.add_argument("nc_pattern", nargs="?", default="QM_*.nc", help="Patron de NetCDF dentro de carpetas numericas")
+    split_p.add_argument("frames", nargs="?", help="Modo legacy: all, N, A-B, N-end o lista separada por coma")
+    split_p.add_argument("--root", default=".", help="Carpeta raiz con subcarpetas numericas")
+    split_p.add_argument("--nc-pattern", dest="nc_pattern_option", help="Patron de NetCDF sin pasar prmtop posicional")
     split_p.add_argument("--cpptraj", help="Ruta a cpptraj; si se omite se busca en PATH")
+    split_p.add_argument("--count", type=int, help="Cantidad de rst7 a extraer, distribuidos en toda la trayectoria")
+    split_p.add_argument(
+        "--skip-initial-ps",
+        type=float,
+        help="Ignorar frames NC anteriores a este tiempo global en ps antes de muestrear",
+    )
+    split_p.add_argument("--out-dir", default="restarts", help="Carpeta de salida para rst7 y prmtop")
     split_p.add_argument("--out-prefix", default="QM", help="Prefijo de salida")
+    split_p.add_argument("--qm-xyz-out", default="qm_snapshots.xyz", help="XYZ QM de los snapshots elegidos dentro de out-dir")
+    split_p.add_argument("--no-qm-xyz", action="store_true", help="No generar XYZ QM de los snapshots elegidos")
 
     return parser
 
@@ -152,6 +198,77 @@ def cmd_inspect(args: argparse.Namespace) -> None:
     if mismatched_segments:
         text = ", ".join(str(index) for index in mismatched_segments)
         print(f"Segmentos donde frames XYZ != nstlim: {text}")
+
+    maybe_merge_after_inspect(args, segments)
+
+
+def maybe_merge_after_inspect(args: argparse.Namespace, segments) -> None:
+    exclude_indexes = parse_segment_selection(args.exclude) if args.exclude else set()
+    if args.merge == "no":
+        return
+    if args.merge == "ask" and not sys.stdin.isatty():
+        return
+
+    should_merge = args.merge == "yes"
+    if args.merge == "ask":
+        print()
+        print("Merge de XYZ inspeccionados")
+        print("  Enter/n = no mergear")
+        print("  a       = mergear todos los segmentos disponibles")
+        print("  e       = mergear excluyendo segmentos")
+        choice = input("Que queres hacer? [n/a/e]: ").strip().lower()
+        if choice in {"", "n", "no"}:
+            return
+        if choice in {"a", "all", "t", "todos", "s", "si", "sí", "y", "yes"}:
+            should_merge = True
+        elif choice in {"e", "exclude", "excluir"}:
+            text = input("Segmentos a excluir (ej: 2,5-7): ").strip()
+            exclude_indexes = parse_segment_selection(text)
+            should_merge = True
+        else:
+            raise SystemExit(f"Opcion invalida para merge: {choice}")
+
+    if should_merge:
+        selected_segments = [segment for segment in segments if segment.index not in exclude_indexes]
+        missing = sorted(exclude_indexes - {segment.index for segment in segments})
+        if missing:
+            print(f"[WARN] Segmentos a excluir no detectados: {', '.join(map(str, missing))}")
+        if not selected_segments:
+            raise SystemExit("No quedan segmentos para mergear despues de aplicar exclusiones.")
+        processed, frames, total_ps = merge_segment_xyz(selected_segments, args.xyz_name, Path(args.out))
+        if frames == 0:
+            raise SystemExit("No se proceso ningun frame. Revisar nombres de archivos y segmentos.")
+        print()
+        print(f"Segmentos mergeados: {processed}")
+        if exclude_indexes:
+            print(f"Segmentos excluidos: {', '.join(map(str, sorted(exclude_indexes)))}")
+        print(f"Frames totales: {frames}")
+        print(f"Tiempo total (ps): {total_ps:.9f}")
+        print(f"XYZ combinado: {args.out}")
+
+
+def parse_segment_selection(text: str) -> set[int]:
+    indexes: set[int] = set()
+    if not text.strip():
+        return indexes
+    for part in text.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        if "-" in token:
+            left, right = token.split("-", 1)
+            if not left.isdigit() or not right.isdigit():
+                raise SystemExit(f"Seleccion de segmentos invalida: {token}")
+            start = int(left)
+            end = int(right)
+            if start > end:
+                raise SystemExit(f"Rango de segmentos invalido: {token}")
+            indexes.update(range(start, end + 1))
+        else:
+            if not token.isdigit():
+                raise SystemExit(f"Seleccion de segmentos invalida: {token}")
+            indexes.add(int(token))
+    return indexes
 
 
 def segment_frame_state(nstlim: int | None, frames: int | None) -> str:
@@ -450,20 +567,114 @@ def write_timeseries(path: Path, atom_ids: list[int], rows: list[list[float]]) -
 
 
 def cmd_split_nc(args: argparse.Namespace) -> None:
-    cpptraj = args.cpptraj or shutil.which("cpptraj")
+    cpptraj = resolve_cpptraj(args.cpptraj)
     if not cpptraj:
         raise SystemExit("cpptraj no esta disponible en PATH. Pasar --cpptraj /ruta/cpptraj.")
 
-    prmtop = Path(args.prmtop)
+    root = Path(args.root)
+    prmtop = resolve_prmtop(root, args.prmtop)
+    nc_pattern = args.nc_pattern_option or args.nc_pattern
     if not prmtop.exists():
         raise SystemExit(f"No existe la topologia: {prmtop}")
-    nc_files = sorted(Path(".").glob(args.nc_pattern))
+
+    if args.frames is not None:
+        cmd_split_nc_legacy(args, cpptraj, prmtop, nc_pattern)
+        return
+
+    trajectories = discover_nc_trajectories(root, nc_pattern, cpptraj, prmtop)
+    if not trajectories:
+        raise SystemExit(f"No se encontraron archivos {nc_pattern!r} en carpetas numericas de {root}")
+
+    print_nc_summary(root, prmtop, trajectories)
+    total_frames = sum(item.frames for item in trajectories)
+    all_snapshots = resolve_all_snapshots(trajectories)
+    skip_initial_ps = resolve_skip_initial_ps(args.skip_initial_ps)
+    eligible_snapshots = [snapshot for snapshot in all_snapshots if snapshot.time_ps >= skip_initial_ps]
+    if not eligible_snapshots:
+        raise SystemExit(
+            f"No quedan frames NC despues de aplicar skip inicial de {skip_initial_ps:.9g} ps. "
+            f"La trayectoria llega hasta {all_snapshots[-1].time_ps:.9g} ps."
+        )
+    if skip_initial_ps > 0.0:
+        print(
+            f"Frames elegibles desde {skip_initial_ps:.9g} ps: "
+            f"{len(eligible_snapshots)} de {total_frames}"
+        )
+
+    count = args.count if args.count is not None else prompt_restart_count(len(eligible_snapshots))
+    if count < 1 or count > len(eligible_snapshots):
+        raise SystemExit(f"La cantidad de rst7 debe estar entre 1 y {len(eligible_snapshots)}.")
+
+    selected_snapshots = select_evenly_spaced_snapshots(eligible_snapshots, count)
+    selected_frames = [snapshot.global_nc_frame for snapshot in selected_snapshots]
+    qm_xyz_frames = [] if args.no_qm_xyz else collect_qm_xyz_frames(selected_snapshots)
+    out_dir = Path(args.out_dir)
+    if not out_dir.is_absolute():
+        out_dir = root / out_dir
+    write_sampled_restarts(cpptraj, prmtop, trajectories, selected_frames, out_dir, args.out_prefix)
+    shutil.copy2(prmtop, out_dir / prmtop.name)
+    if not args.no_qm_xyz:
+        qm_xyz_path = out_dir / args.qm_xyz_out
+        write_qm_snapshot_xyz(qm_xyz_path, selected_snapshots, qm_xyz_frames)
+    print()
+    print(f"Listo. Se generaron {count} archivos {args.out_prefix}_*.rst7 en {out_dir}.")
+    print(f"Topologia copiada: {out_dir / prmtop.name}")
+    if not args.no_qm_xyz:
+        print(f"XYZ QM de snapshots: {out_dir / args.qm_xyz_out}")
+
+
+def resolve_cpptraj(explicit: str | None) -> str | None:
+    if explicit:
+        return explicit
+    conda_env = os.environ.get("CONDA_PREFIX")
+    if conda_env:
+        conda_cpptraj = Path(conda_env) / "bin" / "cpptraj"
+        if conda_cpptraj.exists() and conda_cpptraj.is_file():
+            return str(conda_cpptraj)
+    return shutil.which("cpptraj")
+
+
+def resolve_prmtop(root: Path, explicit: str | None) -> Path:
+    if explicit:
+        path = Path(explicit)
+        if not path.exists() and not path.is_absolute():
+            root_path = root / path
+            if root_path.exists():
+                return root_path
+        return path
+    prmtops = natural_sorted(root.glob("*.prmtop"))
+    if not prmtops:
+        raise SystemExit(f"No se encontraron archivos .prmtop en {root}")
+    if len(prmtops) == 1:
+        print(f"Topologia detectada: {prmtops[0]}")
+        return prmtops[0]
+    if not sys.stdin.isatty():
+        names = ", ".join(path.name for path in prmtops)
+        raise SystemExit(f"Hay mas de un .prmtop en {root}: {names}. Pasar el archivo a usar.")
+
+    print("Los prmtop presentes son:")
+    for idx, path in enumerate(prmtops, start=1):
+        print(f"  {idx}. {path.name}")
+    while True:
+        text = input("Escriba el nombre o numero del archivo de topologia a usar: ").strip()
+        if text.isdigit():
+            index = int(text)
+            if 1 <= index <= len(prmtops):
+                return prmtops[index - 1]
+        for path in prmtops:
+            if text == path.name or text == str(path):
+                return path
+        print("Seleccion invalida.")
+
+
+def cmd_split_nc_legacy(args: argparse.Namespace, cpptraj: str, prmtop: Path, nc_pattern: str) -> None:
+    nc_files = natural_sorted(Path(".").glob(nc_pattern))
     if not nc_files:
-        raise SystemExit(f"No se encontraron archivos con patron {args.nc_pattern!r}")
+        raise SystemExit(f"No se encontraron archivos con patron {nc_pattern!r}")
     if list(Path(".").glob(f"{args.out_prefix}_*.rst7")):
         raise SystemExit(f"Ya existen archivos {args.out_prefix}_*.rst7 en este directorio.")
 
-    selected_frames = resolve_frame_selection(cpptraj, prmtop, nc_files, args.frames)
+    selected_frames = resolve_frame_selection(cpptraj, prmtop, nc_files, args.frames or "all")
     with tempfile.TemporaryDirectory(prefix=".md_split_") as tmp:
         tmpdir = Path(tmp)
         input_path = tmpdir / "cpptraj.in"
@@ -491,6 +702,233 @@ def cmd_split_nc(args: argparse.Namespace) -> None:
         for label, frame_path in zip(labels, generated):
             shutil.move(str(frame_path), f"{args.out_prefix}_{label}.rst7")
     print(f"Listo. Se generaron {len(labels)} archivos {args.out_prefix}_*.rst7.")
+
+
+def discover_nc_trajectories(root: Path, nc_pattern: str, cpptraj: str, prmtop: Path) -> list[NcTrajectory]:
+    trajectories: list[NcTrajectory] = []
+    for seg_dir in find_numeric_dirs(root):
+        input_path = seg_dir / "d_QM.in"
+        try:
+            dt_ps, _nstlim = parse_d_qm_input(input_path)
+        except (OSError, ValueError) as exc:
+            raise SystemExit(f"No se pudo leer dt en {input_path}: {exc}") from exc
+        ntwx = parse_amber_int_param(input_path, "ntwx") if input_path.exists() else None
+        if ntwx is None or ntwx < 1:
+            raise SystemExit(f"No se pudo leer ntwx valido en {input_path}. Es necesario para mapear NC -> qm.xyz.")
+        xyz_path = seg_dir / "qm.xyz"
+        if not xyz_path.exists():
+            raise SystemExit(f"No existe {xyz_path}. Es necesario para armar el XYZ QM de snapshots.")
+        for nc_path in natural_sorted(seg_dir.glob(nc_pattern)):
+            if not nc_path.is_file():
+                continue
+            frames = get_total_frames(cpptraj, prmtop, [nc_path])
+            trajectories.append(
+                NcTrajectory(
+                    segment=int(seg_dir.name),
+                    path=nc_path,
+                    frames=frames,
+                    ntwx=ntwx,
+                    dt_ps=dt_ps,
+                    xyz_path=xyz_path,
+                )
+            )
+    return trajectories
+
+
+def print_nc_summary(root: Path, prmtop: Path, trajectories: list[NcTrajectory]) -> None:
+    print(f"Root: {root.resolve()}")
+    print(f"Topologia: {prmtop}")
+    print()
+    print("seg  archivo nc                           frames   ntwx   dt_nc_ps   ultimo frame QM")
+    for item in trajectories:
+        rel = item.path
+        try:
+            rel = item.path.relative_to(root)
+        except ValueError:
+            pass
+        print(
+            f"{item.segment:>3}  {str(rel):<35}  {item.frames:>6}  {item.ntwx:>5}  "
+            f"{item.dt_ps * item.ntwx:>9.6g}  {item.frames * item.ntwx:>15}"
+        )
+    print()
+    print(f"Archivos NC detectados: {len(trajectories)}")
+    print(f"Frames totales: {sum(item.frames for item in trajectories)}")
+
+
+def parse_amber_int_param(path: Path, name: str) -> int | None:
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    match = re.search(rf"\b{name}\s*=\s*(\d+)", text, re.IGNORECASE)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def prompt_restart_count(total_frames: int) -> int:
+    if not sys.stdin.isatty():
+        raise SystemExit("Para uso no interactivo hay que pasar --count N.")
+    while True:
+        text = input(f"Cuantos rst7 queres generar? [1-{total_frames}]: ").strip()
+        if text.isdigit():
+            return int(text)
+        print("Ingrese un numero entero.")
+
+
+def resolve_skip_initial_ps(value: float | None) -> float:
+    if value is not None:
+        if value < 0.0:
+            raise SystemExit("--skip-initial-ps debe ser >= 0.")
+        return value
+    if not sys.stdin.isatty():
+        return 0.0
+    text = input("Ignorar frames iniciales antes de cuantos ps? (Enter = 0): ").strip()
+    if not text:
+        return 0.0
+    try:
+        parsed = float(text)
+    except ValueError as exc:
+        raise SystemExit(f"Valor invalido para ps iniciales: {text}") from exc
+    if parsed < 0.0:
+        raise SystemExit("El tiempo inicial a ignorar debe ser >= 0.")
+    return parsed
+
+
+def resolve_all_snapshots(trajectories: list[NcTrajectory]) -> list[SelectedSnapshot]:
+    snapshots: list[SelectedSnapshot] = []
+    global_frame = 1
+    global_time_ps = 0.0
+    for trajectory in trajectories:
+        frame_dt_ps = trajectory.dt_ps * trajectory.ntwx
+        for local_frame in range(1, trajectory.frames + 1):
+            time_ps = global_time_ps + local_frame * frame_dt_ps
+            snapshots.append(
+                SelectedSnapshot(
+                    output_index=0,
+                    global_nc_frame=global_frame,
+                    time_ps=time_ps,
+                    trajectory=trajectory,
+                    local_nc_frame=local_frame,
+                    qm_dynamic_frame=local_frame * trajectory.ntwx,
+                )
+            )
+            global_frame += 1
+        global_time_ps += trajectory.frames * frame_dt_ps
+    return snapshots
+
+
+def select_evenly_spaced_snapshots(
+    eligible_snapshots: list[SelectedSnapshot],
+    count: int,
+) -> list[SelectedSnapshot]:
+    if count == 1:
+        selected_indexes = [len(eligible_snapshots) // 2]
+    else:
+        selected_indexes: list[int] = []
+        seen: set[int] = set()
+        last_index = len(eligible_snapshots) - 1
+        for idx in range(count):
+            selected_index = round(idx * last_index / (count - 1))
+            selected_index = max(0, min(last_index, selected_index))
+            while selected_index in seen and selected_index < last_index:
+                selected_index += 1
+            while selected_index in seen and selected_index > 0:
+                selected_index -= 1
+            selected_indexes.append(selected_index)
+            seen.add(selected_index)
+    return [
+        SelectedSnapshot(
+            output_index=output_index,
+            global_nc_frame=snapshot.global_nc_frame,
+            time_ps=snapshot.time_ps,
+            trajectory=snapshot.trajectory,
+            local_nc_frame=snapshot.local_nc_frame,
+            qm_dynamic_frame=snapshot.qm_dynamic_frame,
+        )
+        for output_index, snapshot in enumerate((eligible_snapshots[i] for i in selected_indexes), start=1)
+    ]
+
+
+def collect_qm_xyz_frames(selected_snapshots: list[SelectedSnapshot]):
+    frames_by_path = {}
+    qm_frames = []
+    for snapshot in selected_snapshots:
+        xyz_path = snapshot.trajectory.xyz_path
+        if xyz_path not in frames_by_path:
+            frames_by_path[xyz_path] = parse_xyz_frames(xyz_path)[1:]
+        frames = frames_by_path[xyz_path]
+        if snapshot.qm_dynamic_frame < 1 or snapshot.qm_dynamic_frame > len(frames):
+            raise SystemExit(
+                "No se pudo mapear snapshot NC a qm.xyz: "
+                f"segmento {snapshot.trajectory.segment}, frame NC local {snapshot.local_nc_frame}, "
+                f"frame QM esperado {snapshot.qm_dynamic_frame}, frames QM disponibles {len(frames)}."
+            )
+        qm_frames.append(frames[snapshot.qm_dynamic_frame - 1])
+    return qm_frames
+
+
+def write_qm_snapshot_xyz(path: Path, selected_snapshots: list[SelectedSnapshot], qm_frames) -> None:
+    with path.open("w", encoding="utf-8") as out:
+        for snapshot, frame in zip(selected_snapshots, qm_frames):
+            out.write(f"{frame.natoms_line.strip()}\n")
+            out.write(
+                f"restart_index={snapshot.output_index} "
+                f"global_nc_frame={snapshot.global_nc_frame} "
+                f"time_ps={snapshot.time_ps:.9f} "
+                f"segment={snapshot.trajectory.segment} "
+                f"nc_file={snapshot.trajectory.path.name} "
+                f"nc_frame={snapshot.local_nc_frame} "
+                f"qm_dynamic_frame={snapshot.qm_dynamic_frame} "
+                f"ntwx={snapshot.trajectory.ntwx}\n"
+            )
+            for atom_line in frame.atom_lines:
+                out.write(f"{atom_line.rstrip()}\n")
+
+
+def write_sampled_restarts(
+    cpptraj: str,
+    prmtop: Path,
+    trajectories: list[NcTrajectory],
+    selected_frames: list[int],
+    out_dir: Path,
+    out_prefix: str,
+) -> None:
+    if out_dir.exists() and any(out_dir.iterdir()):
+        raise SystemExit(f"La carpeta de salida {out_dir} ya existe y no esta vacia.")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if list(out_dir.glob(f"{out_prefix}_*.rst7")):
+        raise SystemExit(f"Ya existen archivos {out_prefix}_*.rst7 en {out_dir}.")
+
+    with tempfile.TemporaryDirectory(prefix=".md_split_") as tmp:
+        tmpdir = Path(tmp)
+        input_path = tmpdir / "cpptraj.in"
+        out_prefix_path = tmpdir / "frames.rst7"
+        with input_path.open("w", encoding="utf-8") as fh:
+            fh.write(f"parm {prmtop}\n")
+            for item in trajectories:
+                fh.write(f"trajin {item.path}\n")
+            fh.write(
+                f"trajout {out_prefix_path} restart multi keepext "
+                f"onlyframes {','.join(map(str, selected_frames))}\n"
+            )
+            fh.write("run\n")
+        result = subprocess.run([cpptraj, "-i", str(input_path)], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        if result.returncode != 0:
+            raise SystemExit(result.stdout)
+        generated = natural_sorted(tmpdir.glob("frames.*.rst7"))
+        if not generated and out_prefix_path.exists():
+            generated = [out_prefix_path]
+        if not generated:
+            raise SystemExit("cpptraj no genero frames.\n" + result.stdout[-2000:])
+        if len(generated) != len(selected_frames):
+            raise SystemExit(f"cpptraj genero {len(generated)} frames, pero se esperaban {len(selected_frames)}.")
+        for output_index, frame_path in enumerate(generated, start=1):
+            shutil.move(str(frame_path), out_dir / f"{out_prefix}_{output_index}.rst7")
+
+
+def natural_sorted(paths) -> list[Path]:
+    def key(path: Path) -> list[object]:
+        return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", str(path))]
+
+    return sorted(paths, key=key)
 
 
 def resolve_frame_selection(cpptraj: str, prmtop: Path, nc_files: list[Path], frame_spec: str) -> list[int] | None:
