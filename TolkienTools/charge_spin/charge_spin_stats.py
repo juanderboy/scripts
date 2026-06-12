@@ -500,12 +500,18 @@ def build_analysis_entities(atom_ids, atom_labels, actor_config=None):
         {"id": aid, "label": atom_labels.get(aid, str(aid)), "atom_ids": [aid]}
         for aid in atom_ids
     ]
-    if actor_config is not None:
+    if actor_config is None:
+        actor_configs = []
+    elif isinstance(actor_config, list):
+        actor_configs = actor_config
+    else:
+        actor_configs = [actor_config]
+    for config in actor_configs:
         entities.append(
             {
-                "id": actor_config["id"],
-                "label": actor_config["label"],
-                "atom_ids": list(actor_config["atom_ids"]),
+                "id": config["id"],
+                "label": config["label"],
+                "atom_ids": list(config["atom_ids"]),
             }
         )
     return entities
@@ -516,8 +522,14 @@ def get_analysis_entity_ids(atom_ids, actor_config=None):
     Return the ordered identifiers used in plots/combined outputs.
     """
     entity_ids = list(atom_ids)
-    if actor_config is not None:
-        entity_ids.append(actor_config["id"])
+    if actor_config is None:
+        actor_configs = []
+    elif isinstance(actor_config, list):
+        actor_configs = actor_config
+    else:
+        actor_configs = [actor_config]
+    for config in actor_configs:
+        entity_ids.append(config["id"])
     return entity_ids
 
 

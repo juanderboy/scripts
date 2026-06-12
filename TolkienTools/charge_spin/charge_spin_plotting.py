@@ -64,7 +64,7 @@ def make_combined_hist_figure(
                 ax_q.text(mu, ymax*1.02, f"{mu:.2f}",
                           rotation=90, ha="center", va="bottom", fontsize=7)
             label = atom_labels.get(aid, str(aid)) if atom_labels is not None else str(aid)
-            ax_q.set_ylabel(f"Atom {label}")
+            ax_q.set_ylabel(f"Entity {label}")
             ax_q.set_xlabel(charge_axis_label)
             ax_q.legend(fontsize=8)
         else:
@@ -140,7 +140,7 @@ def make_timeseries_figure(
                 continue
             n = min(times.size, q_vals.size)
             label = atom_labels.get(aid, str(aid)) if atom_labels is not None else str(aid)
-            ax_q.plot(times[:n], q_vals[:n], linewidth=1.6, color=cmap(idx % 10), label=f"Atom {label}")
+            ax_q.plot(times[:n], q_vals[:n], linewidth=1.6, color=cmap(idx % 10), label=f"Entity {label}")
         ax_q.set_xlabel("Time (ps)")
         ax_q.set_ylabel("Charge")
         ax_q.legend(fontsize=8)
@@ -156,7 +156,7 @@ def make_timeseries_figure(
                 continue
             n = min(times.size, s_vals.size)
             label = atom_labels.get(aid, str(aid)) if atom_labels is not None else str(aid)
-            ax_s.plot(times[:n], s_vals[:n], linewidth=1.6, color=cmap(idx % 10), label=f"Atom {label}")
+            ax_s.plot(times[:n], s_vals[:n], linewidth=1.6, color=cmap(idx % 10), label=f"Entity {label}")
         ax_s.set_xlabel("Time (ps)")
         ax_s.set_ylabel(spin_ylabel)
         ax_s.legend(fontsize=8)

@@ -42,6 +42,19 @@ fraccion en la dinamica y genera histogramas individuales solo para los atomos
 que superan el umbral minimo pedido (5% por defecto). El resto de los atomos se
 agrupa como una entidad `resto`, con su propio histograma.
 
+Tambien existe un modo de fragmentos moleculares para analizar zonas como
+Fe/porfirina/agua/histidina. Antes de pedir la composicion de cada fragmento,
+el flujo genera `spin_fragment_numbering_viewer.html` con todos los atomos
+numerados. Despues se ingresan nombres de fragmentos y listas de atomos; cada
+fragmento se analiza como una entidad cuyo valor de spin por snapshot es la suma
+de los spines atomicos que lo forman. Las listas aceptan atomos separados por
+espacios o comas, rangos como `10-18`, y el token `remaining` para tomar todos
+los atomos aun no asignados a fragmentos previos. Las definiciones usadas se
+guardan en `spin_fragment_definitions.dat` y las salidas principales llevan el
+sufijo `with_fragments`. Si quedan atomos sin asignar a ningun fragmento, el
+programa avisa cuales son y permite redefinir los fragmentos; si se acepta
+continuar, los agrupa automaticamente como `resto` y genera su histograma.
+
 En modo ORCA, aunque el histograma se arme con muchos `SP_*.out`, el visor
 `spin_localization_viewer.html` usa una unica geometria representativa: toma el
 primer output ORCA ordenado que contenga un bloque

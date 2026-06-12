@@ -133,6 +133,7 @@ def write_spin_localization_viewer(
     highlighted_atom_ids,
     atom_types,
     avg_fraction_by_atom,
+    label_all_atoms=False,
 ):
     """
     Write a py3Dmol-based HTML viewer highlighting localized-spin atoms.
@@ -146,6 +147,7 @@ def write_spin_localization_viewer(
         highlighted_atom_ids,
         atom_types,
         avg_fraction_by_atom,
+        label_all_atoms=label_all_atoms,
     )
 
 
@@ -155,6 +157,7 @@ def write_orca_spin_localization_viewer(
     highlighted_atom_ids,
     atom_types,
     avg_fraction_by_atom,
+    label_all_atoms=False,
 ):
     """
     Write a spin-localization viewer from an ORCA output geometry block.
@@ -167,6 +170,7 @@ def write_orca_spin_localization_viewer(
         highlighted_atom_ids,
         atom_types,
         avg_fraction_by_atom,
+        label_all_atoms=label_all_atoms,
     )
 
 
@@ -193,6 +197,7 @@ def write_spin_localization_viewer_from_atoms(
     highlighted_atom_ids,
     atom_types,
     avg_fraction_by_atom,
+    label_all_atoms=False,
 ):
     """
     Write a py3Dmol-based HTML viewer from parsed atoms.
@@ -207,18 +212,24 @@ def write_spin_localization_viewer_from_atoms(
 
     for atom in atoms:
         aid = atom["index"]
-        if aid not in highlighted:
+        if not label_all_atoms and aid not in highlighted:
             continue
-        frac = 100.0 * float(avg_fraction_by_atom.get(aid, 0.0))
         element = atom_types.get(aid, atom["element"])
+        if aid in highlighted and aid in avg_fraction_by_atom:
+            frac = 100.0 * float(avg_fraction_by_atom.get(aid, 0.0))
+            label_text = f"{aid} {element} {frac:.1f}%"
+            font_size = 15
+        else:
+            label_text = f"{aid} {element}"
+            font_size = 12
         view.addLabel(
-            f"{aid} {element} {frac:.1f}%",
+            label_text,
             {
                 "position": {"x": atom["x"], "y": atom["y"], "z": atom["z"]},
                 "fontColor": "black",
                 "backgroundColor": "white",
                 "backgroundOpacity": 0.9,
-                "fontSize": 15,
+                "fontSize": font_size,
                 "inFront": True,
             },
         )

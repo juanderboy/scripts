@@ -213,7 +213,13 @@ def write_combined_entity_timeseries(
     """
     Write per-entity combined time-series files, including an optional grouped actor.
     """
-    actor_id = actor_config["id"] if actor_config is not None else None
+    if actor_config is None:
+        actor_configs = []
+    elif isinstance(actor_config, list):
+        actor_configs = actor_config
+    else:
+        actor_configs = [actor_config]
+    actor_by_id = {config["id"]: config for config in actor_configs}
     for entity_id in entity_ids:
         q_vals = np.asarray(per_entity_charge.get(entity_id, []), dtype=float)
 
@@ -225,9 +231,10 @@ def write_combined_entity_timeseries(
             t_use = times
             q_use = q_vals
 
-        if entity_id == actor_id:
-            atom_out = f"actor_{sanitize_output_token(actor_config['label'])}_{suffix}_timeseries.dat"
-            entity_label = actor_config["label"]
+        if entity_id in actor_by_id:
+            config = actor_by_id[entity_id]
+            atom_out = f"actor_{sanitize_output_token(config['label'])}_{suffix}_timeseries.dat"
+            entity_label = config["label"]
         else:
             atom_out = f"atom_{entity_id}_{suffix}_timeseries.dat"
             entity_label = f"atom {entity_id}"

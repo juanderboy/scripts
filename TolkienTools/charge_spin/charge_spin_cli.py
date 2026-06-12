@@ -69,6 +69,240 @@ from charge_spin_viewer import (
 )
 
 
+def parse_atom_selection_with_ranges(atom_ids_str, remaining_atom_ids=None):
+    """
+    Parse atom selections accepting space-separated IDs and simple ranges.
+    """
+    atom_ids = []
+    for token in atom_ids_str.replace(",", " ").split():
+        if token.lower() == "remaining":
+            if remaining_atom_ids is None:
+                print("Error: 'remaining' is only available while defining molecular fragments.")
+                sys.exit(1)
+            atom_ids.extend(remaining_atom_ids)
+        elif "-" in token:
+            parts = token.split("-")
+            if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
+                print(f"Error: invalid atom range '{token}'. Use forms like 10-18.")
+                sys.exit(1)
+            start = int(parts[0])
+            end = int(parts[1])
+            step = 1 if end >= start else -1
+            atom_ids.extend(range(start, end + step, step))
+        else:
+            try:
+                atom_ids.append(int(token))
+            except ValueError:
+                print("Error: atom numbers must be integers separated by spaces.")
+                sys.exit(1)
+
+    deduped = []
+    for aid in atom_ids:
+        if aid not in deduped:
+            deduped.append(aid)
+    return deduped
+
+
+def actor_config_list(actor_config):
+    """
+    Return actor configuration as a list.
+    """
+    if actor_config is None:
+        return []
+    if isinstance(actor_config, list):
+        return actor_config
+    return [actor_config]
+
+
+def selected_atom_ids_from_actor_config(actor_config):
+    """
+    Return the union of atoms that belong to grouped actors.
+    """
+    selected = []
+    for config in actor_config_list(actor_config):
+        for aid in config["atom_ids"]:
+            if aid not in selected:
+                selected.append(aid)
+    return selected
+
+
+def append_actor_config(actor_config, new_config):
+    """
+    Append one grouped actor while preserving the historical single-dict shape.
+    """
+    configs = actor_config_list(actor_config)
+    configs.append(new_config)
+    return configs
+
+
+def write_fragment_definitions_report(actor_configs, atom_type_map, outname="spin_fragment_definitions.dat"):
+    """
+    Save molecular-fragment definitions used in a grouped analysis.
+    """
+    with open(outname, "w") as out:
+        out.write("# fragment_id fragment_label atom_id atom_type\n")
+        for config in actor_config_list(actor_configs):
+            for aid in config["atom_ids"]:
+                out.write(
+                    f"{sanitize_output_token(config['id'])} "
+                    f"{sanitize_output_token(config['label'])} "
+                    f"{aid:d} {atom_type_map.get(aid, '?')}\n"
+                )
+    print(f"[OK] Fragment definitions saved to '{outname}'.")
+
+
+def write_numbered_atom_viewer_for_fragment_selection(
+    orca_mode,
+    orca_files,
+    atom_ids,
+    atom_type_map,
+):
+    """
+    Generate a full atom-numbering viewer before fragment composition prompts.
+    """
+    output_path = "spin_fragment_numbering_viewer.html"
+    if orca_mode:
+        viewer_orca_file = find_orca_geometry_file_for_viewer(orca_files)
+        if viewer_orca_file is None:
+            raise ValueError("none of the ORCA files has a CARTESIAN COORDINATES (ANGSTROEM) block")
+        print(f"[INFO] Using '{viewer_orca_file}' for the fragment-numbering viewer.")
+        write_orca_spin_localization_viewer(
+            viewer_orca_file,
+            output_path,
+            atom_ids,
+            atom_type_map,
+            {},
+            label_all_atoms=True,
+        )
+    else:
+        xyz_path = find_default_xyz_for_spin_viewer()
+        if xyz_path is None:
+            xyz_path = input(
+                "XYZ file for the fragment-numbering viewer was not autodetected. Enter path (Enter = skip viewer): "
+            ).strip()
+        if not xyz_path:
+            raise ValueError("no XYZ file selected")
+        if not os.path.isfile(xyz_path):
+            raise ValueError(f"XYZ file '{xyz_path}' was not found")
+        write_spin_localization_viewer(
+            xyz_path,
+            output_path,
+            atom_ids,
+            atom_type_map,
+            {},
+            label_all_atoms=True,
+        )
+    print(f"[INFO] Use '{output_path}' to read atom numbers before defining fragments.")
+    open_choice = prompt_numbered_choice(
+        "Open the atom-numbering viewer in the default browser?",
+        [("Yes", True), ("No", False)],
+        default_idx=0
+    )
+    if open_choice:
+        open_html_viewer(output_path)
+
+
+def prompt_spin_fragment_configs(available_atom_ids, atom_type_map):
+    """
+    Prompt molecular fragments and return them as grouped actor configs.
+    """
+    print("")
+    print("Define molecular fragments. Each fragment spin is the sum of its atom spins per snapshot.")
+    print("Atom lists accept spaces, commas, ranges such as 1 2 3 10-18, and the token 'remaining'.")
+    print("Leave the fragment name blank after adding at least one fragment to finish.")
+
+    available_atom_ids = list(available_atom_ids)
+    available_atom_set = set(available_atom_ids)
+    while True:
+        fragments = []
+        used_atoms = set()
+        used_atom_to_fragment = {}
+        used_fragment_ids = set()
+        while True:
+            label = input(f"Fragment {len(fragments) + 1} name (Enter = finish): ").strip()
+            if label == "":
+                if fragments:
+                    break
+                print("Error: at least one fragment is required.")
+                continue
+
+            atoms_str = input(f"Atoms in fragment '{label}': ").strip()
+            remaining_atom_ids = [aid for aid in available_atom_ids if aid not in used_atoms]
+            atom_ids = parse_atom_selection_with_ranges(atoms_str, remaining_atom_ids=remaining_atom_ids)
+            if not atom_ids:
+                print("Error: no atoms were provided for this fragment.")
+                sys.exit(1)
+
+            invalid = [aid for aid in atom_ids if aid not in available_atom_set]
+            if invalid:
+                print(
+                    "Error: these atoms are not available in the current spin analysis: "
+                    + " ".join(str(aid) for aid in invalid)
+                )
+                sys.exit(1)
+
+            repeated = [aid for aid in atom_ids if aid in used_atoms]
+            if repeated:
+                for aid in repeated:
+                    previous_fragment = used_atom_to_fragment.get(aid, "?")
+                    print(
+                        f"El atomo {aid} ya fue asignado al fragmento "
+                        f"{previous_fragment}. Revisa tu asignacion."
+                    )
+                continue
+
+            safe_label = sanitize_output_token(label)
+            fragment_id = f"fragment_{safe_label}"
+            if fragment_id in used_fragment_ids:
+                print(f"Error: fragment name '{label}' duplicates a previous fragment after sanitizing.")
+                sys.exit(1)
+            fragments.append(
+                {
+                    "id": fragment_id,
+                    "label": label,
+                    "atom_ids": atom_ids,
+                }
+            )
+            used_fragment_ids.add(fragment_id)
+            used_atoms.update(atom_ids)
+            for aid in atom_ids:
+                used_atom_to_fragment[aid] = label
+            atom_summary = ", ".join(f"{aid}({atom_type_map.get(aid, '?')})" for aid in atom_ids)
+            print(f"[INFO] Fragment '{label}' added with atoms: {atom_summary}")
+
+        unassigned_atoms = [aid for aid in available_atom_ids if aid not in used_atoms]
+        if not unassigned_atoms:
+            return fragments
+
+        missing_summary = ", ".join(f"{aid}({atom_type_map.get(aid, '?')})" for aid in unassigned_atoms)
+        print("")
+        print(f"Faltaron asignar los atomos {missing_summary} a algun fragmento.")
+        resolution = prompt_numbered_choice(
+            "Estas seguro de continuar?",
+            [("Yes, add them as 'resto'", "resto"),
+             ("No, redefine the fragments", "redefine")],
+            default_idx=1
+        )
+        if resolution == "redefine":
+            print("[INFO] Fragment definitions will be entered again.")
+            continue
+
+        auto_resto_label = "resto"
+        auto_resto_id = "fragment_resto"
+        if auto_resto_id in used_fragment_ids:
+            auto_resto_label = "resto_unassigned"
+            auto_resto_id = "fragment_resto_unassigned"
+        fragments.append(
+            {
+                "id": auto_resto_id,
+                "label": auto_resto_label,
+                "atom_ids": unassigned_atoms,
+            }
+        )
+        print(f"[INFO] Unassigned atoms will be grouped as '{auto_resto_label}'.")
+        return fragments
+
+
 def main():
     print_welcome_banner()
     mode = prompt_numbered_choice(
@@ -566,7 +800,8 @@ def main():
         atom_selection_mode = prompt_numbered_choice(
             "Atom selection mode:",
             [("Manual atom selection", "manual"),
-             ("Automatic spin-localization selection with a grouped 'resto'", "auto_spin")],
+             ("Automatic spin-localization selection with a grouped 'resto'", "auto_spin"),
+             ("Molecular fragments: sum spin over user-defined atom groups", "fragment_spin")],
             default_idx=0
         )
     else:
@@ -651,6 +886,29 @@ def main():
                     open_html_viewer("spin_localization_viewer.html")
             except Exception as exc:
                 print(f"[WARN] Spin-localization viewer was skipped: {exc}")
+    elif atom_selection_mode == "fragment_spin":
+        spin_atoms_list = get_atom_list_from_full(spin_full, active_spin_header, lio=(prog == "lio"))
+        if not spin_atoms_list:
+            print("Error: no atoms were found in the spin population file.")
+            sys.exit(1)
+        all_spin_atom_ids = [aid for aid, _atype in spin_atoms_list]
+        atom_type_map = {aid: atype for aid, atype in spin_atoms_list}
+        available_atom_ids = set(all_spin_atom_ids)
+
+        try:
+            write_numbered_atom_viewer_for_fragment_selection(
+                orca_mode,
+                orca_files if orca_mode else [],
+                all_spin_atom_ids,
+                atom_type_map,
+            )
+        except Exception as exc:
+            print(f"[WARN] Atom-numbering viewer was skipped: {exc}")
+
+        actor_config = prompt_spin_fragment_configs(all_spin_atom_ids, atom_type_map)
+        atom_ids = []
+        spin_consistency_atom_ids = selected_atom_ids_from_actor_config(actor_config)
+        write_fragment_definitions_report(actor_config, atom_type_map)
     else:
         atoms_str = input("Enter atom numbers to track, separated by spaces (for example: 45 46 47): ").strip()
         try:
@@ -666,19 +924,20 @@ def main():
 
     # Custom labels for atoms (optional)
     atom_labels = {aid: str(aid) for aid in atom_ids}
-    if actor_config is not None:
-        atom_labels[actor_config["id"]] = actor_config["label"]
-    use_labels = prompt_numbered_choice(
-        "Do you want to assign custom labels to the atoms?",
-        [("No", False), ("Yes", True)],
-        default_idx=0
-    )
-    if use_labels:
-        print("Enter a label for each atom; leave blank to use the default atom number.")
-        for aid in atom_ids:
-            label = input(f"Label for atom {aid} (for example, 'Fe'; leave blank to use '{aid}'): ").strip()
-            if label:
-                atom_labels[aid] = label
+    for config in actor_config_list(actor_config):
+        atom_labels[config["id"]] = config["label"]
+    if atom_ids:
+        use_labels = prompt_numbered_choice(
+            "Do you want to assign custom labels to the atoms?",
+            [("No", False), ("Yes", True)],
+            default_idx=0
+        )
+        if use_labels:
+            print("Enter a label for each atom; leave blank to use the default atom number.")
+            for aid in atom_ids:
+                label = input(f"Label for atom {aid} (for example, 'Fe'; leave blank to use '{aid}'): ").strip()
+                if label:
+                    atom_labels[aid] = label
 
     make_time_plots = prompt_numbered_choice(
         "Do you want to generate charge/spin time-series plots?",
@@ -807,9 +1066,10 @@ def main():
                     )
 
                     if add_mode == "manual":
+                        excluded_atom_ids = set(atom_ids) | set(selected_atom_ids_from_actor_config(actor_config))
                         new_atom_ids = prompt_additional_atom_selection(
                             available_atom_ids,
-                            excluded_atom_ids=atom_ids
+                            excluded_atom_ids=excluded_atom_ids
                         )
                         atom_ids = list(atom_ids) + new_atom_ids
                         for aid in new_atom_ids:
@@ -833,16 +1093,17 @@ def main():
                             )
                         )
                     elif add_mode == "auto_actor":
-                        actor_members = [aid for aid in auto_added_atom_ids if aid not in atom_ids]
+                        already_selected = set(atom_ids) | set(selected_atom_ids_from_actor_config(actor_config))
+                        actor_members = [aid for aid in auto_added_atom_ids if aid not in already_selected]
                         if not actor_members:
                             print("Error: there are no suggested atoms left to build the grouped actor.")
                             sys.exit(1)
                         actor_label = "proposed_spin_pool"
-                        actor_config = {
+                        actor_config = append_actor_config(actor_config, {
                             "id": f"actor_{sanitize_output_token(actor_label)}",
                             "label": actor_label,
                             "atom_ids": actor_members,
-                        }
+                        })
                         spin_keep_mask = None
                         print(
                             "[INFO] Grouped actor added to the analysis using atoms: "
@@ -858,14 +1119,17 @@ def main():
                     sys.exit(1)
 
     analysis_entity_ids = get_analysis_entity_ids(atom_ids, actor_config=actor_config)
-    if actor_config is not None:
-        atom_labels[actor_config["id"]] = actor_config["label"]
-    if actor_config is None:
+    for config in actor_config_list(actor_config):
+        atom_labels[config["id"]] = config["label"]
+    actor_configs = actor_config_list(actor_config)
+    if not actor_configs:
         output_variant_suffix = None
-    elif actor_config["label"] == "proposed_spin_pool":
+    elif len(actor_configs) == 1 and actor_configs[0]["label"] == "proposed_spin_pool":
         output_variant_suffix = "with_coque"
+    elif atom_selection_mode == "fragment_spin":
+        output_variant_suffix = "with_fragments"
     else:
-        output_variant_suffix = f"with_{sanitize_output_token(actor_config['label'])}"
+        output_variant_suffix = f"with_{sanitize_output_token(actor_configs[0]['label'])}"
 
     if orca_mode and primary_analysis_kind == "mulliken":
         q_ts_out = "mulliken_charge_timeseries.dat"
