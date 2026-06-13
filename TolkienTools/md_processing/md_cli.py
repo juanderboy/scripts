@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,10 +21,6 @@ from md_xyz import merge_segment_xyz, parse_xyz_frames, xyz_summary
 
 
 POPULATION_DEFAULTS = ("mulliken", "mulliken_spin", "lowdin", "lowdin_spin")
-LIO_FRAGMENT_ALIASES = {
-    "mulliken": "mq",
-    "mulliken_spin": "ms",
-}
 
 
 @dataclass(frozen=True)
@@ -52,17 +49,18 @@ def build_parser() -> argparse.ArgumentParser:
         description="Procesado general de dinamicas moleculares fragmentadas en carpetas numericas.",
         epilog=(
             "Ejemplos:\n"
-            "  tolkien-tools md inspect\n"
-            "  tolkien-tools md inspect --merge yes --exclude 2,5-7 --out qm_completo.xyz\n"
+            "  tolkien-tools md inspect-merge\n"
+            "  tolkien-tools md inspect-merge --merge yes --exclude 2,5-7 --out qm_completo.xyz\n"
             "  tolkien-tools md geom --metric dFeN:distance:9,10\n"
-            "  tolkien-tools md merge-pop --sources mulliken mulliken_spin\n"
-            "  tolkien-tools md spin-ts --source mulliken_spin --atoms 9 10\n"
             "  tolkien-tools md split-nc --count 100\n"
         ),
     )
     subparsers = parser.add_subparsers(dest="command")
 
-    inspect_p = subparsers.add_parser("inspect", help="Resume una corrida fragmentada")
+    inspect_p = subparsers.add_parser(
+        "inspect-merge",
+        help="Inspecciona segmentos y puede mergear XYZ + cargas/spines",
+    )
     add_root_args(inspect_p)
     inspect_p.add_argument("--xyz-name", default="qm.xyz")
     inspect_p.add_argument("--input-name", default="d_QM.in")
@@ -78,6 +76,14 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Segmentos a excluir del merge. Ej: 2,5-7",
     )
+    inspect_p.add_argument(
+        "--pop-sources",
+        nargs="+",
+        default=list(POPULATION_DEFAULTS),
+        help="Archivos de carga/spin a consolidar junto con el XYZ",
+    )
+    inspect_p.add_argument("--pop-suffix", default="_full.dat", help="Sufijo de salida para cargas/spines consolidados")
+    inspect_p.add_argument("--no-pop", action="store_true", help="No consolidar cargas/spines al mergear")
 
     merge_xyz_p = subparsers.add_parser("merge-xyz", help="Une qm.xyz de carpetas numericas")
     add_root_args(merge_xyz_p)
@@ -95,24 +101,8 @@ def build_parser() -> argparse.ArgumentParser:
     geom_p.add_argument("--viewer-out", default="xyz_viewer.html", help="HTML de salida para inspeccion 3D")
     geom_p.add_argument("--viewer-frame", type=int, default=1, help="Frame del XYZ para mostrar en el visor")
     geom_p.add_argument("--viewer-labels", choices=["hover", "always"], default="always", help="Mostrar indices siempre o solo en hover")
-    geom_p.add_argument("--viewer-backend", choices=["auto", "py3dmol", "plotly"], default="auto", help="Motor del visor 3D")
+    geom_p.add_argument("--viewer-backend", choices=["py3dmol", "plotly", "auto"], default="py3dmol", help="Motor del visor 3D")
     geom_p.add_argument("--no-open-viewer", action="store_true", help="No intentar abrir automaticamente el visor HTML")
-
-    merge_pop_p = subparsers.add_parser("merge-pop", help="Une archivos de poblaciones desde segmentos numericos")
-    add_root_args(merge_pop_p)
-    merge_pop_p.add_argument("--sources", nargs="+", default=list(POPULATION_DEFAULTS), help="Nombres dentro de cada segmento")
-    merge_pop_p.add_argument("--input-name", default="d_QM.in")
-    merge_pop_p.add_argument("--out-dir", default=".", help="Directorio de salida")
-    merge_pop_p.add_argument("--suffix", default="_full.dat", help="Sufijo de salida")
-    merge_pop_p.add_argument("--lio-aliases", action="store_true", help="Tambien generar mq_*.dat/ms_*.dat fragmentados")
-
-    spin_p = subparsers.add_parser("spin-ts", help="Serie temporal de poblacion para atomos seleccionados")
-    add_root_args(spin_p)
-    spin_p.add_argument("--source", default="mulliken_spin", help="Archivo fuente dentro de cada segmento o archivo consolidado")
-    spin_p.add_argument("--atoms", nargs="+", type=int, required=True, help="Indices atomicos 1-based")
-    spin_p.add_argument("--input-name", default="d_QM.in")
-    spin_p.add_argument("--dt", type=float, help="Paso temporal entre frames en ps; si se omite se infiere de d_QM.in")
-    spin_p.add_argument("--out", default="spin_timeseries.dat")
 
     split_p = subparsers.add_parser("split-nc", help="Inspecciona NetCDF fragmentados y extrae rst7 con cpptraj")
     split_p.add_argument("prmtop", nargs="?", help="Topologia AMBER .prmtop; si se omite se busca automaticamente")
@@ -139,7 +129,7 @@ def add_root_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--root", default=".", help="Carpeta raiz con subcarpetas numericas")
 
 
-def cmd_inspect(args: argparse.Namespace) -> None:
+def cmd_inspect_merge(args: argparse.Namespace) -> None:
     root = Path(args.root)
     segments = discover_segments(root, args.input_name)
     if not segments:
@@ -199,10 +189,10 @@ def cmd_inspect(args: argparse.Namespace) -> None:
         text = ", ".join(str(index) for index in mismatched_segments)
         print(f"Segmentos donde frames XYZ != nstlim: {text}")
 
-    maybe_merge_after_inspect(args, segments)
+    maybe_merge_after_inspect_merge(args, segments)
 
 
-def maybe_merge_after_inspect(args: argparse.Namespace, segments) -> None:
+def maybe_merge_after_inspect_merge(args: argparse.Namespace, segments) -> None:
     exclude_indexes = parse_segment_selection(args.exclude) if args.exclude else set()
     if args.merge == "no":
         return
@@ -245,6 +235,8 @@ def maybe_merge_after_inspect(args: argparse.Namespace, segments) -> None:
         print(f"Frames totales: {frames}")
         print(f"Tiempo total (ps): {total_ps:.9f}")
         print(f"XYZ combinado: {args.out}")
+        if not args.no_pop:
+            merge_populations_after_inspect_merge(selected_segments, args.pop_sources, Path(args.out).parent, args.pop_suffix)
 
 
 def parse_segment_selection(text: str) -> set[int]:
@@ -382,39 +374,111 @@ def prompt_scatter_pairs(specs) -> list[str]:
 
 
 def open_viewer_in_browser(viewer_path: Path) -> None:
-    try:
-        import webbrowser
+    open_status = open_html_in_browser(viewer_path)
+    if open_status == "html":
+        print("Visor 3D abierto en el navegador.")
+    elif open_status == "folder":
+        print(
+            "[WARN] No pude abrir automaticamente el visor HTML. "
+            "Se abrio la carpeta de trabajo con explorer.exe ."
+        )
+    else:
+        print(
+            "[WARN] No pude abrir automaticamente el navegador ni la carpeta. "
+            "Abrir manualmente el HTML indicado arriba."
+        )
 
-        opened = webbrowser.open(viewer_path.resolve().as_uri(), new=2)
-    except Exception as exc:
-        print(f"[WARN] No pude abrir automaticamente el visor: {exc}")
+
+def open_html_in_browser(html_path):
+    """
+    Intenta abrir el HTML en el navegador por defecto.
+    En WSL prioriza `wslview` para abrir en Windows.
+    Si no puede abrir el HTML, intenta abrir la carpeta con `explorer.exe .`.
+    En WSL evita `xdg-open`/`webbrowser`, porque pueden delegar a `gio` y
+    reportar exito aunque no haya aplicacion registrada para HTML.
+    """
+    abs_path = os.path.abspath(html_path)
+    folder_path = os.path.dirname(abs_path)
+    if shutil.which("wslview"):
+        try:
+            p = subprocess.run(
+                ["wslview", abs_path],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if p.returncode == 0:
+                return "html"
+        except Exception:
+            pass
+
+    if running_under_wsl():
+        return open_folder_with_explorer(folder_path)
+
+    if shutil.which("xdg-open"):
+        try:
+            p = subprocess.run(
+                ["xdg-open", abs_path],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if p.returncode == 0:
+                return "html"
+        except Exception:
+            pass
+
+    try:
+        if bool(webbrowser.open(f"file://{abs_path}")):
+            return "html"
+    except Exception:
+        pass
+
+    return open_folder_with_explorer(folder_path)
+
+
+def running_under_wsl() -> bool:
+    if os.environ.get("WSL_DISTRO_NAME"):
+        return True
+    try:
+        with open("/proc/version", "r", encoding="utf-8", errors="ignore") as fh:
+            return "microsoft" in fh.read().lower()
+    except OSError:
+        return False
+
+
+def open_folder_with_explorer(folder_path: str) -> str:
+    try:
+        subprocess.Popen(
+            ["explorer.exe", "."],
+            cwd=folder_path,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return "folder"
+    except Exception:
+        return "none"
+
+
+def merge_populations_after_inspect_merge(segments, sources: list[str], out_dir: Path, suffix: str) -> None:
+    existing_sources = [source for source in sources if any((segment.path / source).exists() for segment in segments)]
+    if not existing_sources:
+        print("Cargas/spines: no se encontraron archivos para consolidar en los segmentos mergeados.")
         return
 
-    if opened:
-        print("Visor 3D abierto en el navegador.")
-    else:
-        print("[WARN] No pude abrir automaticamente el navegador. Abrir manualmente el HTML indicado arriba.")
+    print()
+    print("Consolidando cargas/spines con la misma seleccion/exclusion del XYZ:")
+    merge_population_sources(segments, existing_sources, out_dir, suffix)
 
 
-def cmd_merge_pop(args: argparse.Namespace) -> None:
-    root = Path(args.root)
-    segments = discover_segments(root, args.input_name)
-    if not segments:
-        raise SystemExit(f"No se encontraron carpetas numericas en {root}")
-    out_dir = Path(args.out_dir)
+def merge_population_sources(segments, sources: list[str], out_dir: Path, suffix: str) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    for source in args.sources:
-        output = out_dir / f"{source}{args.suffix}"
+    for source in sources:
+        output = out_dir / f"{source}{suffix}"
         count = merge_population_source(segments, source, output)
         if count:
             print(f"{source}: {count} segmentos -> {output}")
-            if args.lio_aliases and source in LIO_FRAGMENT_ALIASES:
-                alias_count = write_lio_alias_files(segments, source, LIO_FRAGMENT_ALIASES[source], out_dir)
-                print(
-                    f"  alias LIO fragmentado: {alias_count} segmentos -> "
-                    f"{LIO_FRAGMENT_ALIASES[source]}_*.dat"
-                )
         else:
             print(f"{source}: no encontrado")
 
@@ -449,20 +513,6 @@ def write_population_source_without_initial_block(path: Path, out) -> bool:
     return wrote_line
 
 
-def write_lio_alias_files(segments, source: str, alias: str, out_dir: Path) -> int:
-    count = 0
-    for segment in segments:
-        path = segment.path / source
-        if not path.exists():
-            continue
-        output = out_dir / f"{alias}_{segment.index}.dat"
-        with path.open("r", encoding="utf-8", errors="ignore") as inp, output.open("w", encoding="utf-8") as out:
-            for line in inp:
-                out.write(line)
-        count += 1
-    return count
-
-
 def line_ends_with_newline(path: Path) -> bool:
     try:
         with path.open("rb") as fh:
@@ -470,100 +520,6 @@ def line_ends_with_newline(path: Path) -> bool:
             return fh.read(1) == b"\n"
     except OSError:
         return True
-
-
-def cmd_spin_ts(args: argparse.Namespace) -> None:
-    root = Path(args.root)
-    source_path = Path(args.source)
-    if source_path.exists() and source_path.is_file():
-        if args.dt is None:
-            raise SystemExit("Para usar un archivo consolidado en --source hay que pasar --dt.")
-        rows = build_population_timeseries_from_file(source_path, args.dt, args.atoms)
-    else:
-        segments = discover_segments(root, args.input_name)
-        if not segments:
-            raise SystemExit(f"No se encontraron carpetas numericas en {root}")
-        rows = build_population_timeseries_from_segments(segments, args.source, args.atoms, args.dt)
-
-    if not rows:
-        raise SystemExit("No se encontraron frames de poblacion para los atomos pedidos.")
-    write_timeseries(Path(args.out), args.atoms, rows)
-    print(f"Serie temporal escrita en {args.out} con {len(rows)} frames.")
-
-
-def build_population_timeseries_from_segments(segments, source: str, atom_ids: list[int], dt_override: float | None):
-    rows: list[list[float]] = []
-    global_time = 0.0
-    for segment in segments:
-        path = segment.path / source
-        if not path.exists():
-            continue
-        frame_values = parse_population_blocks(path, atom_ids)
-        frame_values = frame_values[1:]
-        if not frame_values:
-            continue
-        if dt_override is not None:
-            frame_dt = dt_override
-        elif segment.dt_ps is not None:
-            frame_dt = segment.dt_ps
-        else:
-            frame_dt = 1.0
-        for values in frame_values:
-            rows.append([global_time, *values])
-            global_time += frame_dt
-    return rows
-
-
-def build_population_timeseries_from_file(path: Path, dt_ps: float, atom_ids: list[int]):
-    rows: list[list[float]] = []
-    for frame_idx, values in enumerate(parse_population_blocks(path, atom_ids)):
-        rows.append([frame_idx * dt_ps, *values])
-    return rows
-
-
-def parse_population_blocks(path: Path, atom_ids: list[int]) -> list[list[float]]:
-    frames: list[list[float]] = []
-    current = {atom_id: float("nan") for atom_id in atom_ids}
-    inside_frame = False
-    saw_atom = False
-    with path.open("r", encoding="utf-8", errors="ignore") as fh:
-        for line in fh:
-            stripped = line.strip()
-            if stripped.startswith("#") and "Population Analysis" in stripped:
-                if inside_frame and saw_atom:
-                    frames.append([current[atom_id] for atom_id in atom_ids])
-                current = {atom_id: float("nan") for atom_id in atom_ids}
-                inside_frame = True
-                saw_atom = False
-                continue
-            if not inside_frame:
-                continue
-            if "Total Charge" in stripped:
-                frames.append([current[atom_id] for atom_id in atom_ids])
-                inside_frame = False
-                saw_atom = False
-                continue
-            if not stripped or stripped.startswith("#"):
-                continue
-            parts = stripped.split()
-            if len(parts) >= 3 and parts[0].isdigit():
-                atom_idx = int(parts[0])
-                if atom_idx in current:
-                    try:
-                        current[atom_idx] = float(parts[2])
-                    except ValueError:
-                        pass
-                saw_atom = True
-    if inside_frame and saw_atom:
-        frames.append([current[atom_id] for atom_id in atom_ids])
-    return frames
-
-
-def write_timeseries(path: Path, atom_ids: list[int], rows: list[list[float]]) -> None:
-    with path.open("w", encoding="utf-8") as out:
-        out.write("# time_ps " + " ".join(f"atom_{atom_id}" for atom_id in atom_ids) + "\n")
-        for row in rows:
-            out.write(" ".join(f"{value: .9f}" for value in row) + "\n")
 
 
 def cmd_split_nc(args: argparse.Namespace) -> None:
@@ -987,11 +943,9 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     commands = {
-        "inspect": cmd_inspect,
+        "inspect-merge": cmd_inspect_merge,
         "merge-xyz": cmd_merge_xyz,
         "geom": cmd_geom,
-        "merge-pop": cmd_merge_pop,
-        "spin-ts": cmd_spin_ts,
         "split-nc": cmd_split_nc,
     }
     commands[args.command](args)

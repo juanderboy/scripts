@@ -59,10 +59,10 @@ def print_lio_merge_pop_hint(kind):
     print("Puede construirlo yendo al modulo 1 de Tolkien Tools: Molecular dynamics processing.")
     print("Desde la carpeta raiz de la dinamica fragmentada, use:")
     print("  tolkien-tools 1")
-    print("  elegir: merge-pop")
-    print("  ejemplo de argumentos: --sources mulliken mulliken_spin")
+    print("  elegir: inspect-merge")
+    print("  aceptar el merge de XYZ/cargas-spines")
     print("Tambien puede correrlo directo con:")
-    print("  tolkien-tools md merge-pop --sources mulliken mulliken_spin")
+    print("  tolkien-tools md inspect-merge --merge yes")
 
 
 def print_welcome_banner():

@@ -47,20 +47,12 @@ TOOLS = (
 
 MD_SUBCOMMANDS = (
     (
-        "inspect",
-        "Revisar segmentos, frames y tiempos; despues ofrece mergear el XYZ.",
+        "inspect-merge",
+        "Revisar segmentos, frames y tiempos; despues ofrece mergear XYZ y cargas/spines.",
     ),
     (
         "geom",
         "Generar visor 3D y analizar distancias, angulos y dihedros.",
-    ),
-    (
-        "merge-pop",
-        "Unir poblaciones en archivos full compatibles con charge/spin.",
-    ),
-    (
-        "spin-ts",
-        "Extraer serie temporal de poblacion para atomos seleccionados.",
     ),
     (
         "split-nc",
@@ -95,11 +87,11 @@ Programas externos:
 Archivos esperados por rutina:
   1. Molecular dynamics processing
      - Trabaja sobre corridas fragmentadas en subcarpetas numericas 1, 2, 3...
-     - Puede inspeccionar segmentos y unir qm.xyz, analizar geometria, unir
-       poblaciones y generar rst7 muestreados desde QM_*.nc usando cpptraj.
+     - Puede inspeccionar segmentos y unir qm.xyz junto con poblaciones,
+       analizar geometria y generar rst7 muestreados desde QM_*.nc usando cpptraj.
      - El analisis geometrico puede generar un visor 3D HTML con py3Dmol o
        Plotly si estan instalados.
-     - Subcomandos: inspect, geom, merge-pop, spin-ts, split-nc.
+     - Subcomandos: inspect-merge, geom, split-nc.
 
   2. TD-DFT spectra
      - Lee salidas TD-DFT de ORCA, normalmente archivos TD_*.out.
@@ -242,7 +234,7 @@ def prompt_md_processing_choice() -> tuple[str, list[str] | None]:
     print("  q. Salir")
     print()
 
-    choice = input("Elegir herramienta (Enter = inspect): ").strip().lower()
+    choice = input("Elegir herramienta (Enter = inspect-merge): ").strip().lower()
     if choice in {"h", "help", "ayuda"}:
         return "launch", ["--help"]
     if choice in {"0", "m", "menu", "principal"}:
@@ -250,7 +242,7 @@ def prompt_md_processing_choice() -> tuple[str, list[str] | None]:
     if choice in {"q", "quit", "salir"}:
         return "exit", None
     if choice == "":
-        command = "inspect"
+        command = "inspect-merge"
     else:
         if not choice.isdigit():
             raise ValueError("La herramienta de procesado debe elegirse por numero.")
@@ -260,14 +252,7 @@ def prompt_md_processing_choice() -> tuple[str, list[str] | None]:
         command, _description = MD_SUBCOMMANDS[index - 1]
 
     args = [command]
-    if command == "spin-ts":
-        atoms = input("Atomos a seguir, separados por espacios (Enter = cancelar): ").strip()
-        if not atoms:
-            return "cancel", None
-        if not all(atom.isdigit() for atom in atoms.split()):
-            raise ValueError("Los atomos deben ser indices enteros separados por espacios.")
-        args.extend(["--atoms", *atoms.split()])
-    elif command == "split-nc":
+    if command == "split-nc":
         nc_pattern = input("Patron de trayectorias NetCDF (Enter = QM_*.nc): ").strip() or "QM_*.nc"
         skip_initial_ps = input("Ignorar frames iniciales antes de cuantos ps? (Enter = preguntar despues): ").strip()
         count = input("Cantidad de rst7 a generar (Enter = preguntar despues de inspeccionar): ").strip()

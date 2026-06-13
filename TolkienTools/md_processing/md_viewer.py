@@ -89,6 +89,8 @@ def write_xyz_viewer(
         except Exception as exc:
             if backend == "py3dmol":
                 raise RuntimeError(f"No se pudo generar el visor py3Dmol: {exc}") from exc
+            print(f"[WARN] No se pudo generar el visor py3Dmol: {exc}")
+            print("       Se generara un visor HTML basico con Plotly.")
 
     if backend not in {"auto", "plotly"}:
         raise ValueError(f"Backend de visor no soportado: {backend}")

@@ -527,7 +527,7 @@ def main():
 
     if prog == "lio":
         # LIO can consume either already-merged files from `tolkien-tools md
-        # merge-pop` or legacy per-segment mq_*.dat/ms_*.dat files.
+        # inspect-merge` or legacy per-segment mq_*.dat/ms_*.dat files.
         charge_full = find_first_existing_file(("mulliken_full.dat", "mq_full.dat"))
         if charge_full:
             print(f"Using merged charge file: {charge_full}")

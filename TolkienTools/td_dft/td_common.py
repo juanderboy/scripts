@@ -128,6 +128,8 @@ def open_html_in_browser(html_path):
     Intenta abrir el HTML en el navegador por defecto.
     En WSL prioriza `wslview` para abrir en Windows.
     Si no puede abrir el HTML, intenta abrir la carpeta con `explorer.exe .`.
+    En WSL evita `xdg-open`/`webbrowser`, porque pueden delegar a `gio` y
+    reportar exito aunque no haya aplicacion registrada para HTML.
     """
     abs_path = os.path.abspath(html_path)
     folder_path = os.path.dirname(abs_path)
@@ -143,6 +145,9 @@ def open_html_in_browser(html_path):
                 return "html"
         except Exception:
             pass
+
+    if running_under_wsl():
+        return open_folder_with_explorer(folder_path)
 
     if shutil.which("xdg-open"):
         try:
@@ -163,13 +168,27 @@ def open_html_in_browser(html_path):
     except Exception:
         pass
 
+    return open_folder_with_explorer(folder_path)
+
+
+def running_under_wsl():
+    if os.environ.get("WSL_DISTRO_NAME"):
+        return True
     try:
-        subprocess.run(
+        with open("/proc/version", "r", encoding="utf-8", errors="ignore") as fh:
+            return "microsoft" in fh.read().lower()
+    except OSError:
+        return False
+
+
+def open_folder_with_explorer(folder_path):
+    try:
+        subprocess.Popen(
             ["explorer.exe", "."],
             cwd=folder_path,
-            check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            start_new_session=True,
         )
         return "folder"
     except Exception:

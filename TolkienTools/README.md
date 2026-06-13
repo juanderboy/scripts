@@ -104,11 +104,10 @@ Dependencias por rutina:
 
 - Molecular dynamics processing: lee corridas fragmentadas en subcarpetas
   numericas con archivos como `qm.xyz`, `d_QM.in`, `mulliken_spin` y
-  `QM_*.nc`; `inspect` muestra el panel de segmentos y puede mergear el XYZ
-  completo en el mismo flujo; `split-nc` detecta NetCDF fragmentados y genera
-  una muestra de `rst7` en `restarts/` junto con el XYZ QM sincronizado;
-  `geom` puede generar un visor 3D HTML con `py3Dmol` o Plotly;
-  `merge-pop` genera archivos full compatibles con el modo LIO de charge/spin;
+  `QM_*.nc`; `inspect-merge` muestra el panel de segmentos y puede mergear el
+  XYZ completo junto con cargas/spines en el mismo flujo; `split-nc` detecta
+  NetCDF fragmentados y genera una muestra de `rst7` en `restarts/` junto con
+  el XYZ QM sincronizado; `geom` puede generar un visor 3D HTML con `py3Dmol` o Plotly;
   usa solo Python estandar salvo el visor opcional con `py3Dmol`/`plotly`, los
   plots opcionales con `matplotlib` y `split-nc`, que requiere `cpptraj`.
 - TD-DFT spectra: lee salidas TD-DFT de ORCA, normalmente `TD_*.out`; usa
