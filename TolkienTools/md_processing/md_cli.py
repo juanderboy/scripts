@@ -93,7 +93,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     geom_p = subparsers.add_parser("geom", help="Analiza distancias, angulos y dihedros en un XYZ multi-frame")
     geom_p.add_argument("xyz", nargs="?", default="qm_completo.xyz", help="Archivo XYZ multi-frame (default: qm_completo.xyz)")
-    geom_p.add_argument("--metric", action="append", default=[], help="Formato etiqueta:tipo:atomos. Ej: dFeN:distance:9,10")
+    geom_p.add_argument(
+        "--metric",
+        action="append",
+        default=[],
+        help="Formato etiqueta:tipo:atomos. Ej: dFeN:distance:9,10 o FeOOP:heme_oop:auto",
+    )
     geom_p.add_argument("--scatter", action="append", help="Par etiqueta_x,etiqueta_y. Puede repetirse")
     geom_p.add_argument("--output", default="xyz_analysis", help="Prefijo de archivos de salida")
     geom_p.add_argument("--no-plots", action="store_true", help="No generar PNG")
@@ -330,18 +335,24 @@ def cmd_geom(args: argparse.Namespace) -> None:
 def prompt_metric_specs() -> list[str]:
     print()
     print("Definir parametros geometricos. Formato: etiqueta:tipo:atomos")
-    print("Tipos: distance, angle, dihedral")
+    print("Tipos: distance, angle, dihedral, heme_oop")
     print("Ejemplos:")
     print("  dFeN:distance:9,10")
     print("  ang:angle:9,10,11")
     print("  dih:dihedral:1,2,3,4")
+    print("  FeOOP:heme_oop:auto")
     print("Defina todas las metricas que quiera seguir. Cuando termine, apriete Enter sin escribir nada para avanzar.")
     metrics: list[str] = []
     while True:
         text = input(f"Metrica {len(metrics) + 1} a seguir: ").strip()
         if not text:
             break
-        parse_metric_spec(text)
+        try:
+            parse_metric_spec(text)
+        except ValueError as exc:
+            print(f"Sintaxis incorrecta: {exc}")
+            print("Proba de nuevo. Ejemplo valido: dFeN:distance:9,10")
+            continue
         metrics.append(text)
     if not metrics:
         raise SystemExit("No se definio ninguna metrica geometrica.")
@@ -368,7 +379,12 @@ def prompt_scatter_pairs(specs) -> list[str]:
         if not text:
             break
         # Validate as the user enters the pair, so typos fail early.
-        parse_scatter_pairs([text], specs)
+        try:
+            parse_scatter_pairs([text], specs)
+        except ValueError as exc:
+            print(f"Sintaxis incorrecta: {exc}")
+            print("Proba de nuevo. Ejemplo valido: dFeN,dFeO")
+            continue
         pairs.append(text)
     return pairs
 

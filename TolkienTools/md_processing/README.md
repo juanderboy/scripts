@@ -18,6 +18,7 @@ tolkien-tools md inspect-merge --merge yes --out qm_completo.xyz
 tolkien-tools md inspect-merge --merge yes --exclude 2,5-7 --out qm_completo.xyz
 tolkien-tools md geom
 tolkien-tools md geom qm_completo.xyz --metric dFeN:distance:9,10
+tolkien-tools md geom qm_completo.xyz --metric FeOOP:heme_oop:auto
 tolkien-tools md split-nc
 tolkien-tools md split-nc --count 100
 ```
@@ -136,4 +137,48 @@ Para generar el HTML sin abrirlo automaticamente:
 
 ```bash
 tolkien-tools md geom qm_completo.xyz --no-open-viewer
+```
+
+### Desplazamiento Fe-plano de porfirina
+
+Para hemoproteinas, `geom` tambien puede medir cuanto se levanta el Fe del hemo
+respecto del plano definido por los cuatro nitrogenos pirrolicos coordinados.
+La metrica se llama `heme_oop` y reporta la distancia normal firmada del Fe al
+mejor plano N4, en Angstrom. Por convencion, el signo es positivo hacia la
+histidina proximal.
+
+Modo automatico:
+
+```bash
+tolkien-tools md geom qm_completo.xyz --metric FeOOP:heme_oop:auto
+```
+
+Si hay mas de un Fe, o se quiere fijar cual usar:
+
+```bash
+tolkien-tools md geom qm_completo.xyz --metric FeOOP:heme_oop:11
+```
+
+Tambien se pueden pasar explicitamente Fe,N1,N2,N3,N4:
+
+```bash
+tolkien-tools md geom qm_completo.xyz --metric FeOOP:heme_oop:11,2,4,6,8
+```
+
+Si se quiere fijar tambien el N coordinante de la histidina proximal, usar
+Fe,N1,N2,N3,N4,NHis:
+
+```bash
+tolkien-tools md geom qm_completo.xyz --metric FeOOP:heme_oop:11,2,4,6,8,10
+```
+
+La autodeteccion toma nitrogenos cercanos al Fe y elige el conjunto N4 mas
+coplanar y mejor centrado alrededor del Fe proyectado, para evitar agarrar el N
+axial de la histidina proximal. Luego usa el N cercano restante como referencia
+proximal para orientar el signo.
+
+Si se necesita el valor absoluto sin signo, usar `heme_oop_abs`:
+
+```bash
+tolkien-tools md geom qm_completo.xyz --metric FeOOP_abs:heme_oop_abs:auto
 ```
